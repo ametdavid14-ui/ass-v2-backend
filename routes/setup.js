@@ -122,7 +122,17 @@ router.post('/instalar', async (req, res) => {
         creado_por UUID REFERENCES usuarios(id),
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW(),
-        CONSTRAINT tipo_plantilla_valido CHECK (tipo IN ('evolucion','historia','examen','plan','triage','remision','recomendacion'))
+        CONSTRAINT tipo_plantilla_valido CHECK (tipo IN ('evolucion','historia','examen','plan','triage','remision','recomendacion','salida','formulario'))
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS config_modulos (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        clave VARCHAR(50) NOT NULL UNIQUE,
+        valor JSONB NOT NULL,
+        actualizado_por UUID REFERENCES usuarios(id),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
 
