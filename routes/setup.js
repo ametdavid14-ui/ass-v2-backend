@@ -87,9 +87,21 @@ router.post('/instalar', async (req, res) => {
         password_hash VARCHAR(255) NOT NULL,
         rol VARCHAR(20) NOT NULL DEFAULT 'medico',
         activo BOOLEAN DEFAULT true,
+        fecha_vencimiento DATE,
+        paquete_id UUID,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_login TIMESTAMPTZ,
         CONSTRAINT rol_valido CHECK (rol IN ('admin', 'medico'))
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS paquetes_suscripcion (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        nombre VARCHAR(100) NOT NULL,
+        duracion_dias INTEGER NOT NULL,
+        activo BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
 
@@ -133,6 +145,17 @@ router.post('/instalar', async (req, res) => {
         valor JSONB NOT NULL,
         actualizado_por UUID REFERENCES usuarios(id),
         updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS config_personal (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        usuario_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+        clave VARCHAR(50) NOT NULL,
+        valor JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(usuario_id, clave)
       )
     `);
 

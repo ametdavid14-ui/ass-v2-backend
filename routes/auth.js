@@ -26,6 +26,20 @@ router.post('/login', async (req, res) => {
     if (!valid) {
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
+    // Bloquear si la suscripción venció (solo aplica a médicos, no a admin)
+    if (usuario.rol !== 'admin' && usuario.fecha_vencimiento) {
+      const hoy = new Date(); hoy.setHours(0,0,0,0);
+      const vencimiento = new Date(usuario.fecha_vencimiento);
+      if (vencimiento < hoy) {
+        let mensaje = 'Su suscripción venció. Por favor entre en contacto con el administrador para renovarla.';
+        try {
+          const cfg = await db.query("SELECT valor FROM config_modulos WHERE clave = 'contacto_admin'");
+          const telefono = cfg.rows[0]?.valor?.telefono;
+          if (telefono) mensaje = `Su suscripción venció. Por favor entre en contacto con el administrador al número ${telefono} para renovarla.`;
+        } catch (e) { /* si falla, usa el mensaje genérico */ }
+        return res.status(403).json({ error: mensaje });
+      }
+    }
     // Actualizar last_login
     await db.query('UPDATE usuarios SET last_login = NOW() WHERE id = $1', [usuario.id]);
     // Generar token

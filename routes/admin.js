@@ -17,9 +17,14 @@ router.use(authMiddleware, adminMiddleware);
 // GET /api/admin/usuarios — Listar todos los usuarios
 router.get('/usuarios', async (req, res) => {
   try {
-    const result = await db.query(
-      'SELECT id, documento, nombre, email, rol, activo, created_at, last_login FROM usuarios ORDER BY created_at DESC'
-    );
+    const result = await db.query(`
+      SELECT u.id, u.documento, u.nombre, u.email, u.rol, u.activo,
+             u.fecha_vencimiento, u.paquete_id, p.nombre AS paquete_nombre,
+             u.created_at, u.last_login
+      FROM usuarios u
+      LEFT JOIN paquetes_suscripcion p ON p.id = u.paquete_id
+      ORDER BY u.created_at DESC
+    `);
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: 'Error obteniendo usuarios' });
@@ -80,6 +85,86 @@ router.delete('/usuarios/:id', async (req, res) => {
     res.json({ message: 'Usuario desactivado' });
   } catch (e) {
     res.status(500).json({ error: 'Error desactivando usuario' });
+  }
+});
+
+// =============================================
+// PAQUETES DE SUSCRIPCIÓN
+// =============================================
+
+// GET /api/admin/paquetes — Listar todos los paquetes
+router.get('/paquetes', async (req, res) => {
+  try {
+    const result = await db.query('SELECT * FROM paquetes_suscripcion ORDER BY duracion_dias ASC');
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Error obteniendo paquetes' });
+  }
+});
+
+// POST /api/admin/paquetes — Crear nuevo paquete
+router.post('/paquetes', async (req, res) => {
+  const { nombre, duracion_dias } = req.body;
+  if (!nombre || !duracion_dias || duracion_dias < 1) {
+    return res.status(400).json({ error: 'Nombre y duración en días (mínimo 1) son requeridos' });
+  }
+  try {
+    const result = await db.query(
+      'INSERT INTO paquetes_suscripcion (nombre, duracion_dias) VALUES ($1, $2) RETURNING *',
+      [nombre.trim(), parseInt(duracion_dias)]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'Error creando paquete' });
+  }
+});
+
+// PUT /api/admin/paquetes/:id — Editar paquete
+router.put('/paquetes/:id', async (req, res) => {
+  const { nombre, duracion_dias, activo } = req.body;
+  try {
+    const result = await db.query(
+      'UPDATE paquetes_suscripcion SET nombre=$1, duracion_dias=$2, activo=$3 WHERE id=$4 RETURNING *',
+      [nombre, parseInt(duracion_dias), activo ?? true, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Paquete no encontrado' });
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'Error actualizando paquete' });
+  }
+});
+
+// DELETE /api/admin/paquetes/:id — Eliminar paquete (no afecta usuarios que ya lo tienen asignado)
+router.delete('/paquetes/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM paquetes_suscripcion WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Paquete eliminado' });
+  } catch (e) {
+    res.status(500).json({ error: 'Error eliminando paquete' });
+  }
+});
+
+// POST /api/admin/usuarios/:id/asignar-paquete — Asigna un paquete y activa al usuario
+// con fecha de vencimiento = hoy + duracion_dias del paquete
+router.post('/usuarios/:id/asignar-paquete', async (req, res) => {
+  const { paquete_id } = req.body;
+  if (!paquete_id) return res.status(400).json({ error: 'Falta paquete_id' });
+  try {
+    const paquete = await db.query('SELECT * FROM paquetes_suscripcion WHERE id = $1', [paquete_id]);
+    if (!paquete.rows.length) return res.status(404).json({ error: 'Paquete no encontrado' });
+    const dias = paquete.rows[0].duracion_dias;
+    const result = await db.query(`
+      UPDATE usuarios
+      SET paquete_id = $1,
+          fecha_vencimiento = (CURRENT_DATE + ($2 || ' days')::INTERVAL)::DATE,
+          activo = true
+      WHERE id = $3
+      RETURNING id, documento, nombre, email, rol, activo, fecha_vencimiento, paquete_id
+    `, [paquete_id, dias, req.params.id]);
+    if (!result.rows.length) return res.status(404).json({ error: 'Usuario no encontrado' });
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'Error asignando paquete' });
   }
 });
 

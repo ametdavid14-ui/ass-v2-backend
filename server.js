@@ -14,6 +14,7 @@ const notasRoutes    = require('./routes/notas');
 const favoritosRoutes = require('./routes/favoritos');
 const adminRoutes    = require('./routes/admin');
 const configRoutes   = require('./routes/config');
+const configPersonalRoutes = require('./routes/config-personal');
 const setupRoutes    = require('./routes/setup');  // ← Wizard instalación
 const { db }         = require('./db');
 
@@ -64,6 +65,7 @@ app.use('/api/notas',      notasRoutes);
 app.use('/api/favoritos',  favoritosRoutes);
 app.use('/api/admin',      adminRoutes);
 app.use('/api/config',     configRoutes);
+app.use('/api/config-personal', configPersonalRoutes);
 
 // Health check — usado por keep-alive y Render
 app.get('/api/health', (req, res) => {
