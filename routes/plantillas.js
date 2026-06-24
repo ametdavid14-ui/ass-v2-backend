@@ -54,11 +54,7 @@ router.post('/', authMiddleware, adminMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, adminMiddleware, async (req, res) => {
   const { nombre, descripcion, contenido, secciones, activo } = req.body;
   try {
-    // No permitir editar plantillas del sistema
-    const check = await db.query('SELECT es_sistema FROM plantillas WHERE id = $1', [req.params.id]);
-    if (check.rows[0]?.es_sistema) {
-      return res.status(403).json({ error: 'Las plantillas del sistema no se pueden editar' });
-    }
+    // Las plantillas del sistema SÍ se pueden editar (solo no se pueden eliminar)
     const result = await db.query(
       `UPDATE plantillas SET nombre=$1, descripcion=$2, contenido=$3,
        secciones=$4, activo=$5, updated_at=NOW() WHERE id=$6 RETURNING *`,
