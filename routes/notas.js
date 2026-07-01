@@ -9,7 +9,7 @@ const { authMiddleware } = require('../middleware/auth');
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT id, tipo, contenido, created_at FROM notas_turno
+      `SELECT id, tipo, contenido, created_at, expira_at FROM notas_turno
        WHERE usuario_id = $1 AND expira_at > NOW()
        ORDER BY created_at DESC`,
       [req.user.id]
@@ -35,6 +35,24 @@ router.post('/', authMiddleware, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (e) {
     res.status(500).json({ error: 'Error guardando nota' });
+  }
+});
+
+// PUT /api/notas/:id — Editar nota existente (mientras no haya expirado)
+router.put('/:id', authMiddleware, async (req, res) => {
+  const { contenido } = req.body;
+  if (!contenido) return res.status(400).json({ error: 'contenido requerido' });
+  try {
+    const result = await db.query(
+      `UPDATE notas_turno SET contenido = $1
+       WHERE id = $2 AND usuario_id = $3 AND expira_at > NOW()
+       RETURNING id, tipo, contenido, created_at, expira_at`,
+      [contenido, req.params.id, req.user.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Nota no encontrada o ya expiró' });
+    res.json(result.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: 'Error editando nota' });
   }
 });
 

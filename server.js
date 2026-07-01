@@ -87,10 +87,18 @@ setInterval(async () => {
 // =============================================
 // INICIO
 // =============================================
-app.listen(PORT, () => {
-  console.log(`✅ ASS v2.0 Backend corriendo en puerto ${PORT}`);
-  console.log(`   Entorno: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`   Keep-alive: ${SELF_URL}/api/health`);
-});
+// Compatible con dos entornos:
+// - Render/VPS: corre app.listen() normal en el puerto definido
+// - cPanel con Phusion Passenger: Passenger requiere que se exporte
+//   la app y maneja el puerto internamente (no usa app.listen aquí)
+if (process.env.PASSENGER_BASE_URI || process.env.PASSENGER_APP_ENV) {
+  module.exports = app; // Passenger toma el control del puerto
+} else {
+  app.listen(PORT, () => {
+    console.log(`✅ ASS v2.0 Backend corriendo en puerto ${PORT}`);
+    console.log(`   Entorno: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`   Keep-alive: ${SELF_URL}/api/health`);
+  });
+}
 
 module.exports = app;
