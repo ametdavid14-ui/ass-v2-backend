@@ -24,8 +24,23 @@ const PORT = process.env.PORT || 3001;
 // =============================================
 // MIDDLEWARES
 // =============================================
+// Orígenes permitidos — acepta múltiples frontends separados por coma en FRONTEND_URL
+// Ej: FRONTEND_URL=https://ametss.netlify.app,https://ametss.ametjdavid.workers.dev
+const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || '*')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
+  origin: (origin, callback) => {
+    // Sin origin = Postman/curl/render health checks → permitir
+    if (!origin) return callback(null, true);
+    // Wildcard → permitir todo
+    if (ALLOWED_ORIGINS.includes('*')) return callback(null, true);
+    // Verificar si el origen está en la lista
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error(`Origen no permitido por CORS: ${origin}`));
+  },
   credentials: true
 }));
 app.use(express.json({ limit: '2mb' }));
