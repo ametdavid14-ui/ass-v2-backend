@@ -21,16 +21,19 @@ router.get('/', authMiddleware, async (req, res) => {
 });
 
 // POST /api/notas — Guardar nota del turno
+// Solo "tipo" es obligatorio. "contenido" puede llegar vacío: las Notas
+// Rápidas se crean vacías primero (para que el usuario escriba y luego
+// use "Guardar"), así que exigir contenido no vacío aquí rompía ese flujo.
 router.post('/', authMiddleware, async (req, res) => {
   const { tipo, contenido } = req.body;
-  if (!tipo || !contenido) {
-    return res.status(400).json({ error: 'tipo y contenido requeridos' });
+  if (!tipo) {
+    return res.status(400).json({ error: 'tipo requerido' });
   }
   try {
     const result = await db.query(
       `INSERT INTO notas_turno (usuario_id, tipo, contenido)
-       VALUES ($1, $2, $3) RETURNING id, tipo, created_at`,
-      [req.user.id, tipo, contenido]
+       VALUES ($1, $2, $3) RETURNING id, tipo, contenido, created_at, expira_at`,
+      [req.user.id, tipo, contenido || '']
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
@@ -41,7 +44,7 @@ router.post('/', authMiddleware, async (req, res) => {
 // PUT /api/notas/:id — Editar nota existente (mientras no haya expirado)
 router.put('/:id', authMiddleware, async (req, res) => {
   const { contenido } = req.body;
-  if (!contenido) return res.status(400).json({ error: 'contenido requerido' });
+  if (contenido === undefined) return res.status(400).json({ error: 'contenido requerido' });
   try {
     const result = await db.query(
       `UPDATE notas_turno SET contenido = $1
