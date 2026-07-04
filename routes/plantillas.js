@@ -68,13 +68,18 @@ router.put('/:id', authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // DELETE /api/plantillas/:id — Desactivar (ADMIN, soft delete)
+// El admin puede eliminar CUALQUIER plantilla, incluidas las de sistema
+// (es_sistema=true). La protección anterior que lo impedía se quitó a
+// petición explícita del admin — si borra una plantilla de sistema por
+// error, tendría que recrearla manualmente (o restaurarla con SQL
+// directo en Supabase, ya que esto es un borrado lógico: activo=false).
 router.delete('/:id', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const check = await db.query('SELECT es_sistema FROM plantillas WHERE id = $1', [req.params.id]);
-    if (check.rows[0]?.es_sistema) {
-      return res.status(403).json({ error: 'No se pueden eliminar plantillas del sistema' });
-    }
-    await db.query('UPDATE plantillas SET activo = false WHERE id = $1', [req.params.id]);
+    const result = await db.query(
+      'UPDATE plantillas SET activo = false WHERE id = $1 RETURNING id',
+      [req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Plantilla no encontrada' });
     res.json({ message: 'Plantilla desactivada' });
   } catch (e) {
     res.status(500).json({ error: 'Error desactivando plantilla' });
