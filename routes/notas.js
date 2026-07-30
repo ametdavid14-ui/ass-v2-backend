@@ -78,20 +78,23 @@ router.get('/dia', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/notas/paciente?documento=XXXX
-// Todas las notas (de retención indefinida) de UN paciente, sin importar la
-// fecha — para "Búsqueda de Paciente". Solo dentro de las notas del propio
+// GET /api/notas/paciente?q=XXXX
+// Todas las notas (de retención indefinida) que coincidan con el texto
+// buscado, ya sea por número de DOCUMENTO (coincidencia exacta) o por
+// NOMBRE del paciente (coincidencia parcial, sin distinguir mayúsculas) —
+// para "Búsqueda de Paciente". Solo dentro de las notas del propio
 // usuario (misma privacidad que el resto de la app).
 router.get('/paciente', authMiddleware, async (req, res) => {
-  const { documento } = req.query;
-  if (!documento || !documento.trim()) return res.status(400).json({ error: 'documento requerido' });
+  const q = (req.query.q || req.query.documento || '').trim();
+  if (!q) return res.status(400).json({ error: 'Escriba un nombre o número de documento' });
   try {
     const result = await db.query(
       `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at
        FROM notas_turno
-       WHERE usuario_id = $1 AND retencion_indefinida = true AND documento = $2
+       WHERE usuario_id = $1 AND retencion_indefinida = true
+         AND (documento = $2 OR paciente ILIKE $3)
        ORDER BY created_at ASC`,
-      [req.user.id, documento.trim()]
+      [req.user.id, q, `%${q}%`]
     );
     res.json(result.rows);
   } catch (e) {
