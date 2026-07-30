@@ -4,8 +4,9 @@
 // - Si el usuario es admin, o si el admin activó la retención indefinida
 //   para los usuarios (config_modulos: 'notas_retencion_indefinida_usuarios'),
 //   la nota queda guardada indefinidamente hasta que se borre a mano.
-// - Guarda el nombre del paciente (PACIENTE_GLOBAL del frontend) para poder
-//   identificar la nota en el Calendario Médico.
+// - Guarda nombre del paciente Y documento/tipo de documento, para poder
+//   identificar la nota en el Calendario Médico y buscar por DNI en
+//   Búsqueda de Paciente.
 // =============================================
 const router = require('express').Router();
 const { db } = require('../db');
@@ -25,7 +26,7 @@ async function retencionIndefinidaHabilitada() {
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT id, tipo, contenido, paciente, created_at, expira_at, retencion_indefinida
+      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida
        FROM notas_turno
        WHERE usuario_id = $1 AND expira_at > NOW()
        ORDER BY created_at DESC`,
@@ -65,7 +66,7 @@ router.get('/dia', authMiddleware, async (req, res) => {
   if (!fecha) return res.status(400).json({ error: 'fecha requerida' });
   try {
     const result = await db.query(
-      `SELECT id, tipo, contenido, paciente, created_at
+      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at
        FROM notas_turno
        WHERE usuario_id = $1 AND retencion_indefinida = true AND DATE(created_at) = $2
        ORDER BY created_at ASC`,
@@ -77,9 +78,30 @@ router.get('/dia', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/notas/paciente?documento=XXXX
+// Todas las notas (de retención indefinida) de UN paciente, sin importar la
+// fecha — para "Búsqueda de Paciente". Solo dentro de las notas del propio
+// usuario (misma privacidad que el resto de la app).
+router.get('/paciente', authMiddleware, async (req, res) => {
+  const { documento } = req.query;
+  if (!documento || !documento.trim()) return res.status(400).json({ error: 'documento requerido' });
+  try {
+    const result = await db.query(
+      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at
+       FROM notas_turno
+       WHERE usuario_id = $1 AND retencion_indefinida = true AND documento = $2
+       ORDER BY created_at ASC`,
+      [req.user.id, documento.trim()]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Error buscando notas del paciente' });
+  }
+});
+
 // POST /api/notas — Guardar nota del turno
 router.post('/', authMiddleware, async (req, res) => {
-  const { tipo, contenido, paciente } = req.body;
+  const { tipo, contenido, paciente, documento, tipo_documento } = req.body;
   if (!tipo) {
     return res.status(400).json({ error: 'tipo requerido' });
   }
@@ -88,10 +110,10 @@ router.post('/', authMiddleware, async (req, res) => {
     const indefinida = esAdmin || await retencionIndefinidaHabilitada();
     const expiraSql = indefinida ? `NOW() + INTERVAL '100 years'` : `NOW() + INTERVAL '24 hours'`;
     const result = await db.query(
-      `INSERT INTO notas_turno (usuario_id, tipo, contenido, paciente, expira_at, retencion_indefinida)
-       VALUES ($1, $2, $3, $4, ${expiraSql}, $5)
-       RETURNING id, tipo, contenido, paciente, created_at, expira_at, retencion_indefinida`,
-      [req.user.id, tipo, contenido || '', paciente || '', indefinida]
+      `INSERT INTO notas_turno (usuario_id, tipo, contenido, paciente, documento, tipo_documento, expira_at, retencion_indefinida)
+       VALUES ($1, $2, $3, $4, $5, $6, ${expiraSql}, $7)
+       RETURNING id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida`,
+      [req.user.id, tipo, contenido || '', paciente || '', documento || '', tipo_documento || '', indefinida]
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
@@ -107,7 +129,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const result = await db.query(
       `UPDATE notas_turno SET contenido = $1
        WHERE id = $2 AND usuario_id = $3 AND expira_at > NOW()
-       RETURNING id, tipo, contenido, paciente, created_at, expira_at`,
+       RETURNING id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at`,
       [contenido, req.params.id, req.user.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Nota no encontrada o ya expiró' });
