@@ -46,11 +46,15 @@ router.get('/calendario', authMiddleware, async (req, res) => {
   if (!desde || !hasta) return res.status(400).json({ error: 'desde y hasta son requeridos' });
   try {
     const result = await db.query(
-      `SELECT DATE(created_at) AS fecha, COUNT(*) AS total
+      // Se convierte cada created_at a hora de Bogotá antes de extraer el
+      // DATE. De lo contrario, PostgreSQL agrupa en UTC y toda nota generada
+      // después de las 7pm hora Colombia cuenta como del día siguiente.
+      `SELECT DATE(created_at AT TIME ZONE 'America/Bogota') AS fecha, COUNT(*) AS total
        FROM notas_turno
        WHERE usuario_id = $1 AND retencion_indefinida = true
-         AND created_at >= $2 AND created_at < ($3::date + INTERVAL '1 day')
-       GROUP BY DATE(created_at)`,
+         AND created_at >= ($2::date AT TIME ZONE 'America/Bogota')
+         AND created_at <  (($3::date + INTERVAL '1 day') AT TIME ZONE 'America/Bogota')
+       GROUP BY DATE(created_at AT TIME ZONE 'America/Bogota')`,
       [req.user.id, desde, hasta]
     );
     res.json(result.rows);
@@ -66,9 +70,11 @@ router.get('/dia', authMiddleware, async (req, res) => {
   if (!fecha) return res.status(400).json({ error: 'fecha requerida' });
   try {
     const result = await db.query(
+      // Filtra por día calendario en hora de Bogotá (ver comentario en /calendario)
       `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at
        FROM notas_turno
-       WHERE usuario_id = $1 AND retencion_indefinida = true AND DATE(created_at) = $2
+       WHERE usuario_id = $1 AND retencion_indefinida = true
+         AND DATE(created_at AT TIME ZONE 'America/Bogota') = $2
        ORDER BY created_at ASC`,
       [req.user.id, fecha]
     );
