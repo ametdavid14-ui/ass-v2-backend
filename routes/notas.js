@@ -110,9 +110,59 @@ router.get('/paciente', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/notas/paciente/ingresos?documento=XXX
+// Todas las notas de UN paciente específico (por documento exacto), CON su
+// episodio_id — para la página completa "Ficha del Paciente", donde se
+// agrupan y muestran por INGRESO (episodio de atención), el más reciente
+// primero, y dentro de cada ingreso también la nota más reciente primero.
+router.get('/paciente/ingresos', authMiddleware, async (req, res) => {
+  const documento = (req.query.documento || '').trim();
+  if (!documento) return res.status(400).json({ error: 'documento requerido' });
+  try {
+    const result = await db.query(
+      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at, episodio_id
+       FROM notas_turno
+       WHERE usuario_id = $1 AND retencion_indefinida = true AND documento = $2
+       ORDER BY created_at DESC`,
+      [req.user.id, documento]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Error obteniendo los ingresos del paciente' });
+  }
+});
+
 // POST /api/notas — Guardar nota del turno
+// Determina a qué INGRESO (episodio_id) pertenece una nota nueva:
+// - Si viene un episodio_id_forzado (el médico entró directo a un ingreso
+//   viejo desde la Ficha del Paciente y agregó una nota ahí), se usa ESE
+//   sin importar cuánto tiempo haya pasado — eso "reabre" el ingreso.
+// - Si no, se busca la nota más reciente de ese documento (de cualquier
+//   tipo). Si fue hace menos de 24 horas, se reutiliza su episodio_id
+//   (sigue siendo la misma atención). Si no hay ninguna, o la última fue
+//   hace 24 horas o más, se genera un episodio_id nuevo (nuevo ingreso).
+async function resolverEpisodioId(userId, documento, episodioForzado) {
+  if (episodioForzado) return episodioForzado;
+  if (!documento) return null; // sin documento no se puede agrupar por paciente
+
+  const r = await db.query(
+    `SELECT episodio_id, created_at
+     FROM notas_turno
+     WHERE usuario_id = $1 AND documento = $2 AND episodio_id IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [userId, documento]
+  );
+  const ultima = r.rows[0];
+  if (ultima && (Date.now() - new Date(ultima.created_at).getTime()) < 24 * 60 * 60 * 1000) {
+    return ultima.episodio_id;
+  }
+  const nuevo = await db.query(`SELECT gen_random_uuid() AS id`);
+  return nuevo.rows[0].id;
+}
+
 router.post('/', authMiddleware, async (req, res) => {
-  const { tipo, contenido, paciente, documento, tipo_documento } = req.body;
+  const { tipo, contenido, paciente, documento, tipo_documento, episodio_id_forzado } = req.body;
   if (!tipo) {
     return res.status(400).json({ error: 'tipo requerido' });
   }
@@ -120,11 +170,12 @@ router.post('/', authMiddleware, async (req, res) => {
     const esAdmin = req.user.rol === 'admin';
     const indefinida = esAdmin || await retencionIndefinidaHabilitada();
     const expiraSql = indefinida ? `NOW() + INTERVAL '100 years'` : `NOW() + INTERVAL '24 hours'`;
+    const episodioId = await resolverEpisodioId(req.user.id, documento || '', episodio_id_forzado || null);
     const result = await db.query(
-      `INSERT INTO notas_turno (usuario_id, tipo, contenido, paciente, documento, tipo_documento, expira_at, retencion_indefinida)
-       VALUES ($1, $2, $3, $4, $5, $6, ${expiraSql}, $7)
-       RETURNING id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida`,
-      [req.user.id, tipo, contenido || '', paciente || '', documento || '', tipo_documento || '', indefinida]
+      `INSERT INTO notas_turno (usuario_id, tipo, contenido, paciente, documento, tipo_documento, expira_at, retencion_indefinida, episodio_id)
+       VALUES ($1, $2, $3, $4, $5, $6, ${expiraSql}, $7, $8)
+       RETURNING id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida, episodio_id`,
+      [req.user.id, tipo, contenido || '', paciente || '', documento || '', tipo_documento || '', indefinida, episodioId]
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
