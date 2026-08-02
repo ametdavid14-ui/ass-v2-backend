@@ -89,7 +89,9 @@ router.get('/dia', authMiddleware, async (req, res) => {
 // buscado, ya sea por número de DOCUMENTO (coincidencia exacta) o por
 // NOMBRE del paciente (coincidencia parcial, sin distinguir mayúsculas) —
 // para "Búsqueda de Paciente". Solo dentro de las notas del propio
-// usuario (misma privacidad que el resto de la app).
+// usuario (misma privacidad que el resto de la app). Se ordenan de la
+// MÁS RECIENTE a la más antigua (DESC), para ver primero lo último que
+// pasó con el paciente.
 router.get('/paciente', authMiddleware, async (req, res) => {
   const q = (req.query.q || req.query.documento || '').trim();
   if (!q) return res.status(400).json({ error: 'Escriba un nombre o número de documento' });
@@ -99,7 +101,7 @@ router.get('/paciente', authMiddleware, async (req, res) => {
        FROM notas_turno
        WHERE usuario_id = $1 AND retencion_indefinida = true
          AND (documento = $2 OR paciente ILIKE $3)
-       ORDER BY created_at ASC`,
+       ORDER BY created_at DESC`,
       [req.user.id, q, `%${q}%`]
     );
     res.json(result.rows);
