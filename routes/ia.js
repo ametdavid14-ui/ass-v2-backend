@@ -1,27 +1,35 @@
 // =============================================
 // ASS v2.0 — Ruta de IA: asistente clínico que analiza una nota (Historia
-// Clínica, Evolución Médica, Análisis de Salida) y ofrece 3 cosas:
-//   1. Calcula escalas clínicas relevantes según el cuadro (HEART, CURB-65,
-//      Glasgow, Wells, etc.) — solo si hay datos suficientes para calcularlas.
-//   2. Sugiere un análisis más completo y mejor argumentado.
-//   3. Sugiere qué preguntar/confirmar con el paciente para sustentar mejor
-//      el diagnóstico — NUNCA inventa negativos ("niega fiebre") que el
-//      médico no haya preguntado realmente; solo sugiere la pregunta.
+// Clínica, Evolución Médica, Análisis de Salida) y ofrece 5 cosas:
+//   1. Escalas clínicas (HEART, CURB-65, Glasgow, Wells, etc.)
+//   2. Análisis ampliado
+//   3. Preguntas sugeridas para sustentar el diagnóstico
+//   4. Diagnósticos diferenciales
+//   5. CIE-10 (diferenciales + diagnóstico principal)
+//
+// SOPORTA 2 PROVEEDORES DE IA — Claude (Anthropic) y ChatGPT (OpenAI):
+// - IA_PROVIDER en las variables de entorno decide cuál usar primero
+//   ('claude' o 'openai'; por defecto 'claude' si no se define).
+// - Si el proveedor principal falla (sin key, sin crédito, error de red) Y
+//   el OTRO proveedor sí tiene su key configurada, se reintenta
+//   automáticamente con el otro — así basta con tener configurada
+//   cualquiera de las 2 keys para que el asistente funcione, y si tienes
+//   las 2, hay respaldo automático entre ellas.
 //
 // IMPORTANTE — cómo está diseñado a propósito:
-// - Claude NUNCA escribe la nota final ni la historia clínica directamente.
+// - La IA NUNCA escribe la nota final ni la historia clínica directamente.
 //   Solo devuelve SUGERENCIAS que el médico revisa, edita y decide si usar
 //   — mismo panel que ya existe para Planes/Recomendaciones.
-// - Claude solo ve los campos que el médico YA escribió — nunca inventa
+// - La IA solo ve los campos que el médico YA escribió — nunca inventa
 //   datos clínicos (signos, síntomas, antecedentes) que no estén ahí.
-// - Requiere ANTHROPIC_API_KEY configurada en las variables de entorno.
+// - Requiere ANTHROPIC_API_KEY y/o OPENAI_API_KEY en las variables de entorno.
 // =============================================
 
 const router = require('express').Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { authMiddleware } = require('../middleware/auth');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 
 const SYSTEM_PROMPT = `Eres un asistente clínico de apoyo para un médico de urgencias en Colombia que está completando una nota médica (Historia Clínica, Evolución Médica o Análisis de Salida).
 
@@ -45,6 +53,7 @@ REGLAS ESTRICTAS:
 5. Responde en español, en mayúsculas (para que combine con el estilo de las notas de esta app), conciso.
 6. Si la información dada es insuficiente para sugerir algo útil en alguna de las 5 partes, dilo claramente en esa parte (array vacío) en vez de inventar contenido para rellenar.
 7. Los códigos CIE-10 son SIEMPRE una sugerencia a verificar por el médico antes de facturar o registrar — nunca se presentan como definitivos.
+8. Responde ÚNICAMENTE con el JSON — nada de texto antes, después, ni bloques de código markdown alrededor.
 
 FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
 {
@@ -68,18 +77,76 @@ FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
   "insuficiente": false
 }`;
 
+// ---------- Llamada a Claude (Anthropic) ----------
+async function llamarClaude(userContent) {
+  if (!anthropic) throw new Error('ANTHROPIC_API_KEY no configurada');
+  const mensaje = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+  });
+  return mensaje.content[0]?.text || '{}';
+}
+
+// ---------- Llamada a ChatGPT (OpenAI) — sin SDK aparte, con fetch nativo ----------
+async function llamarChatGPT(userContent) {
+  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY no configurada');
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || 'gpt-4o',
+      max_tokens: 1024,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userContent },
+      ],
+    }),
+  });
+  if (!resp.ok) {
+    const cuerpoError = await resp.text().catch(() => '');
+    throw new Error(`OpenAI respondió ${resp.status}: ${cuerpoError.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '{}';
+}
+
+// Intenta el proveedor configurado como principal (IA_PROVIDER); si falla
+// y el otro tiene su key configurada, reintenta automáticamente con ese.
+async function llamarIAConRespaldo(userContent) {
+  const principal = (process.env.IA_PROVIDER || 'claude').toLowerCase();
+  const proveedores = principal === 'openai' ? ['openai', 'claude'] : ['claude', 'openai'];
+
+  let ultimoError = null;
+  for (const proveedor of proveedores) {
+    try {
+      const texto = proveedor === 'openai' ? await llamarChatGPT(userContent) : await llamarClaude(userContent);
+      return { texto, proveedorUsado: proveedor };
+    } catch (e) {
+      console.error(`Error con ${proveedor}:`, e.message);
+      ultimoError = e;
+    }
+  }
+  throw ultimoError || new Error('Ningún proveedor de IA está configurado');
+}
+
 // POST /api/ia/analizar-nota
 router.post('/analizar-nota', authMiddleware, async (req, res) => {
   const { tipo, campos } = req.body;
   if (!campos || typeof campos !== 'object') {
     return res.status(400).json({ error: 'Faltan los campos de la nota' });
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).json({ error: 'La IA no está configurada en el servidor (falta ANTHROPIC_API_KEY)' });
+  if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'La IA no está configurada en el servidor (falta ANTHROPIC_API_KEY y/o OPENAI_API_KEY)' });
   }
 
   // Solo se envían los campos con contenido real — no tiene sentido
-  // mandarle a Claude campos vacíos o con "___"
+  // mandarle a la IA campos vacíos o con "___"
   const camposConContenido = Object.entries(campos)
     .filter(([_, v]) => v && String(v).trim() && String(v).trim() !== '___')
     .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
@@ -89,30 +156,23 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Escribe al menos el motivo de consulta o la enfermedad actual antes de analizar' });
   }
 
-  try {
-    const mensaje = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [
-        { role: 'user', content: `Tipo de nota: ${tipo || 'Historia Clínica'}\n\nLo que el médico ya escribió:\n\n${camposConContenido}` }
-      ],
-    });
+  const userContent = `Tipo de nota: ${tipo || 'Historia Clínica'}\n\nLo que el médico ya escribió:\n\n${camposConContenido}`;
 
-    const textoRespuesta = mensaje.content[0]?.text || '{}';
-    // Claude a veces envuelve el JSON en ```json ... ``` pese a la instrucción — se limpia por si acaso
-    const jsonLimpio = textoRespuesta.replace(/```json|```/g, '').trim();
+  try {
+    const { texto, proveedorUsado } = await llamarIAConRespaldo(userContent);
+    // Ambos proveedores a veces envuelven el JSON en ```json ... ``` pese a la instrucción
+    const jsonLimpio = texto.replace(/```json|```/g, '').trim();
     let resultado;
     try {
       resultado = JSON.parse(jsonLimpio);
     } catch (e) {
-      return res.status(502).json({ error: 'La IA respondió en un formato inesperado. Intenta de nuevo.' });
+      return res.status(502).json({ error: `La IA (${proveedorUsado}) respondió en un formato inesperado. Intenta de nuevo.` });
     }
-
+    resultado._proveedor = proveedorUsado; // informativo — el frontend puede mostrarlo si quiere
     res.json(resultado);
   } catch (e) {
-    console.error('Error llamando a Claude:', e.message);
-    res.status(502).json({ error: 'No se pudo conectar con la IA — verifica la API key y el crédito disponible' });
+    console.error('Error llamando a la IA (ambos proveedores fallaron o ninguno está configurado):', e.message);
+    res.status(502).json({ error: 'No se pudo conectar con ningún proveedor de IA — verifica las API keys y el crédito disponible' });
   }
 });
 
