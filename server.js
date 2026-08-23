@@ -16,6 +16,8 @@ const adminRoutes    = require('./routes/admin');
 const configRoutes   = require('./routes/config');
 const configPersonalRoutes = require('./routes/config-personal');
 const setupRoutes    = require('./routes/setup');  // ← Wizard instalación
+const cuentaRoutes   = require('./routes/cuenta');  // ← Recuperación de contraseña
+const iaRoutes       = require('./routes/ia');       // ← Asistente clínico (Claude)
 const { db }         = require('./db');
 
 const app  = express();
@@ -81,6 +83,8 @@ app.use('/api/favoritos',  favoritosRoutes);
 app.use('/api/admin',      adminRoutes);
 app.use('/api/config',     configRoutes);
 app.use('/api/config-personal', configPersonalRoutes);
+app.use('/api/cuenta',     loginLimiter, cuentaRoutes);
+app.use('/api/ia',         iaRoutes);
 
 // Health check — usado por keep-alive y Render
 app.get('/api/health', (req, res) => {

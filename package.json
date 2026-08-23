@@ -14,7 +14,8 @@
     "jsonwebtoken": "^9.0.0",
     "pg": "^8.11.3",
     "dotenv": "^16.3.1",
-    "express-rate-limit": "^7.1.5"
+    "express-rate-limit": "^7.1.5",
+    "@anthropic-ai/sdk": "^0.32.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
