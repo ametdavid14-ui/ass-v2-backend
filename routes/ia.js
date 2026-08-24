@@ -61,6 +61,7 @@ REGLAS ESTRICTAS:
 6. Los códigos CIE-10 son siempre una sugerencia a verificar por el médico antes de facturar o registrar — pero da tu mejor estimación siempre, marcada para verificar si hay duda, en vez de omitirla.
 7. "insuficiente" es un campo GLOBAL: márcalo "true" ÚNICAMENTE si la nota no tiene absolutamente ningún contenido clínico aprovechable. Si hay un motivo de consulta y/o enfermedad actual con contenido real, "insuficiente" debe ser "false".
 8. Responde ÚNICAMENTE con el JSON — nada de texto antes, después, ni bloques de código markdown alrededor.
+9. Dentro de cualquier valor de texto (por ejemplo "argumento", "analisis_ampliado", o el "texto" de las secciones), si necesitas separar ideas en líneas distintas usa el escape "\\n" (backslash + n, dos caracteres) — NUNCA un salto de línea real dentro de las comillas, porque eso invalida el JSON completo.
 
 FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
 {
@@ -160,6 +161,36 @@ async function llamarChatGPT(userContent) {
 
 // Intenta el proveedor configurado como principal (IA_PROVIDER); si falla
 // y el otro tiene su key configurada, reintenta automáticamente con ese.
+// Los modelos a veces meten saltos de línea REALES dentro de un valor de
+// texto largo (ej: en las secciones de historia clínica completa) — eso
+// es inválido en JSON (ahí un salto de línea debe ir escapado como \n,
+// dos caracteres, no un salto de línea de verdad). Esta función recorre
+// el texto carácter por carácter y, SOLO cuando está dentro de un valor
+// entre comillas, convierte saltos de línea/tabulaciones reales en su
+// forma escapada — así el JSON queda válido sin tener que depender de
+// que el modelo nunca cometa este error.
+function sanearSaltosDeLineaEnStrings(texto) {
+  let resultado = '';
+  let dentroString = false;
+  let anteriorEsBackslash = false;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto[i];
+    if (dentroString) {
+      if (anteriorEsBackslash) { resultado += c; anteriorEsBackslash = false; continue; }
+      if (c === '\\') { resultado += c; anteriorEsBackslash = true; continue; }
+      if (c === '"') { dentroString = false; resultado += c; continue; }
+      if (c === '\n') { resultado += '\\n'; continue; }
+      if (c === '\r') { resultado += '\\r'; continue; }
+      if (c === '\t') { resultado += '\\t'; continue; }
+      resultado += c;
+    } else {
+      if (c === '"') dentroString = true;
+      resultado += c;
+    }
+  }
+  return resultado;
+}
+
 async function llamarIAConRespaldo(userContent) {
   const principal = (process.env.IA_PROVIDER || 'claude').toLowerCase();
   const proveedores = principal === 'openai' ? ['openai', 'claude'] : ['claude', 'openai'];
@@ -211,6 +242,7 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
     if (inicioJson !== -1 && finJson !== -1 && finJson > inicioJson) {
       jsonLimpio = jsonLimpio.slice(inicioJson, finJson + 1);
     }
+    jsonLimpio = sanearSaltosDeLineaEnStrings(jsonLimpio);
     let resultado;
     try {
       resultado = JSON.parse(jsonLimpio);
