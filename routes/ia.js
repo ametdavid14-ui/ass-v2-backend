@@ -81,9 +81,15 @@ FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
 async function llamarClaude(userContent) {
   if (!anthropic) throw new Error('ANTHROPIC_API_KEY no configurada');
   const mensaje = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-5',
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    // El prompt de sistema es IDÉNTICO en cada llamada (nunca cambia según
+    // el paciente) — cache_control lo marca para que Anthropic lo cachee.
+    // Cuando 2 llamadas caen dentro de la misma ventana de caché (5 min),
+    // la segunda paga ~10% del costo normal por esa parte del texto, en
+    // vez de recalcularlo completo cada vez. En un turno con varios
+    // médicos usando el asistente seguido, esto reduce el costo real.
+    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: userContent }],
   });
   return mensaje.content[0]?.text || '{}';
