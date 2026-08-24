@@ -28,6 +28,7 @@
 const router = require('express').Router();
 const Anthropic = require('@anthropic-ai/sdk');
 const { authMiddleware } = require('../middleware/auth');
+const { db } = require('../db');
 
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 
@@ -51,9 +52,10 @@ REGLAS ESTRICTAS:
 3. Nunca prescribas medicamentos con dosis específicas a menos que el médico ya haya mencionado esa clase de manejo.
 4. Usa lenguaje de sugerencia, nunca afirmaciones absolutas ("podría considerarse...", "sería razonable evaluar...", nunca "el paciente tiene...").
 5. Responde en español, en mayúsculas (para que combine con el estilo de las notas de esta app), conciso.
-6. Si la información dada es insuficiente para sugerir algo útil en alguna de las 5 partes, dilo claramente en esa parte (array vacío) en vez de inventar contenido para rellenar.
+6. Si para alguna de las 5 partes específicamente no hay información suficiente, deja esa parte vacía (array vacío o texto vacío) en vez de inventar contenido para rellenar — esto es independiente del campo "insuficiente" general (ver regla 8).
 7. Los códigos CIE-10 son SIEMPRE una sugerencia a verificar por el médico antes de facturar o registrar — nunca se presentan como definitivos.
-8. Responde ÚNICAMENTE con el JSON — nada de texto antes, después, ni bloques de código markdown alrededor.
+8. "insuficiente" es un campo GLOBAL, no por sección: márcalo "true" ÚNICAMENTE si NINGUNA de las 5 partes tiene contenido útil que ofrecer (las 5 quedaron vacías). Si AL MENOS UNA parte sí tiene contenido útil, "insuficiente" debe ser "false", aunque las otras 4 partes queden vacías por falta de datos para esas específicamente.
+9. Responde ÚNICAMENTE con el JSON — nada de texto antes, después, ni bloques de código markdown alrededor.
 
 FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
 {
@@ -143,7 +145,7 @@ async function llamarIAConRespaldo(userContent) {
 
 // POST /api/ia/analizar-nota
 router.post('/analizar-nota', authMiddleware, async (req, res) => {
-  const { tipo, campos } = req.body;
+  const { tipo, campos, documento, nombrePaciente } = req.body;
   if (!campos || typeof campos !== 'object') {
     return res.status(400).json({ error: 'Faltan los campos de la nota' });
   }
@@ -175,10 +177,43 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
       return res.status(502).json({ error: `La IA (${proveedorUsado}) respondió en un formato inesperado. Intenta de nuevo.` });
     }
     resultado._proveedor = proveedorUsado; // informativo — el frontend puede mostrarlo si quiere
+
+    // Se guarda SIEMPRE, automáticamente — incluye lo que se envió y la
+    // respuesta completa, aunque el médico después no use ninguna
+    // sugerencia. Si falla el guardado, no se bloquea la respuesta al
+    // médico (el análisis ya lo tiene en pantalla); solo se registra el
+    // error en el log del servidor.
+    try {
+      await db.query(
+        `INSERT INTO analisis_ia (usuario_id, documento_paciente, nombre_paciente, tipo_formulario, campos_enviados, respuesta_ia, proveedor)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [req.user.id, documento || null, nombrePaciente || null, tipo || 'Historia Clínica', JSON.stringify(campos), JSON.stringify(resultado), proveedorUsado]
+      );
+    } catch (errorGuardado) {
+      console.error('No se pudo guardar el análisis de IA en el historial:', errorGuardado.message);
+    }
+
     res.json(resultado);
   } catch (e) {
     console.error('Error llamando a la IA (ambos proveedores fallaron o ninguno está configurado):', e.message);
     res.status(502).json({ error: 'No se pudo conectar con ningún proveedor de IA — verifica las API keys y el crédito disponible' });
+  }
+});
+
+// GET /api/ia/historial/:documento — historial de análisis de un paciente
+router.get('/historial/:documento', authMiddleware, async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT a.id, a.documento_paciente, a.tipo_formulario, a.campos_enviados, a.respuesta_ia, a.proveedor, a.created_at, u.nombre AS medico
+       FROM analisis_ia a
+       LEFT JOIN usuarios u ON u.id = a.usuario_id
+       WHERE a.documento_paciente = $1
+       ORDER BY a.created_at DESC`,
+      [req.params.documento]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Error obteniendo el historial de análisis' });
   }
 });
 
