@@ -216,11 +216,23 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
       resultado = JSON.parse(jsonLimpio);
     } catch (e) {
       // Se registra el texto completo en el log del servidor, y se manda
-      // un fragmento real al frontend — así se puede ver qué llegó
-      // exactamente sin necesitar consola/herramientas de desarrollador.
+      // un fragmento REAL al frontend — específicamente alrededor del
+      // punto exacto donde falló el parseo (no solo el inicio), y se
+      // detecta si la respuesta parece haberse cortado antes de terminar.
       console.error('No se pudo parsear la respuesta de la IA. Texto completo recibido:', texto);
+      const posMatch = e.message.match(/position (\d+)/);
+      const pos = posMatch ? parseInt(posMatch[1], 10) : null;
+      let fragmento;
+      if (pos !== null) {
+        const inicio = Math.max(0, pos - 200);
+        const fin = Math.min(jsonLimpio.length, pos + 100);
+        fragmento = `${inicio > 0 ? '...' : ''}${jsonLimpio.slice(inicio, fin)}${fin < jsonLimpio.length ? '...' : ''}`;
+      } else {
+        fragmento = jsonLimpio.slice(-400); // sin posición: mostrar el FINAL, para ver si se cortó ahí
+      }
+      const pareceCortado = !jsonLimpio.trim().endsWith('}');
       return res.status(502).json({
-        error: `La IA (${proveedorUsado}) respondió en un formato inesperado. Fragmento recibido: "${jsonLimpio.slice(0, 300)}${jsonLimpio.length > 300 ? '...' : ''}"`
+        error: `La IA (${proveedorUsado}) respondió en un formato inesperado.${pareceCortado ? ' La respuesta PARECE HABERSE CORTADO antes de terminar (no termina en "}").' : ''} Detalle: ${e.message}. Texto alrededor del problema: "${fragmento}"`
       });
     }
     resultado._proveedor = proveedorUsado; // informativo — el frontend puede mostrarlo si quiere
