@@ -94,7 +94,11 @@ async function llamarClaude(userContent) {
   if (!anthropic) throw new Error('ANTHROPIC_API_KEY no configurada');
   const mensaje = await anthropic.messages.create({
     model: 'claude-sonnet-5',
-    max_tokens: 1024,
+    // Antes en 1024 — insuficiente para las 7 categorías actuales
+    // (reafirmación, análisis, escalas, diferenciales, preguntas, alertas
+    // Y las 3 secciones completas de historia clínica). Con el prompt
+    // ampliado, una respuesta completa puede necesitar bastante más.
+    max_tokens: 4096,
     // El prompt de sistema es IDÉNTICO en cada llamada (nunca cambia según
     // el paciente) — cache_control lo marca para que Anthropic lo cachee.
     // Cuando 2 llamadas caen dentro de la misma ventana de caché (5 min),
@@ -104,7 +108,19 @@ async function llamarClaude(userContent) {
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: userContent }],
   });
-  return mensaje.content[0]?.text || '{}';
+  // Busca el PRIMER bloque de tipo texto (más robusto que asumir que
+  // content[0] siempre es texto) y registra información de diagnóstico si
+  // no se encuentra — antes esto fallaba EN SILENCIO devolviendo '{}',
+  // que parecía una respuesta válida pero vacía, sin ningún error visible.
+  const bloqueTexto = mensaje.content?.find(b => b.type === 'text');
+  if (!bloqueTexto?.text) {
+    console.error('Claude no devolvió texto. stop_reason:', mensaje.stop_reason, '— content:', JSON.stringify(mensaje.content));
+    throw new Error(`Claude no devolvió contenido de texto (stop_reason: ${mensaje.stop_reason || 'desconocido'})`);
+  }
+  if (mensaje.stop_reason === 'max_tokens') {
+    console.error('Advertencia: la respuesta de Claude se cortó por max_tokens — puede venir incompleta.');
+  }
+  return bloqueTexto.text;
 }
 
 // ---------- Llamada a ChatGPT (OpenAI) — sin SDK aparte, con fetch nativo ----------
@@ -118,7 +134,7 @@ async function llamarChatGPT(userContent) {
     },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_tokens: 1024,
+      max_tokens: 4096, // antes 1024 — mismo motivo que Claude, insuficiente para las 7 categorías actuales
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -131,7 +147,15 @@ async function llamarChatGPT(userContent) {
     throw new Error(`OpenAI respondió ${resp.status}: ${cuerpoError.slice(0, 200)}`);
   }
   const data = await resp.json();
-  return data.choices?.[0]?.message?.content || '{}';
+  const contenido = data.choices?.[0]?.message?.content;
+  if (!contenido) {
+    console.error('OpenAI no devolvió contenido. finish_reason:', data.choices?.[0]?.finish_reason, '— respuesta:', JSON.stringify(data).slice(0, 500));
+    throw new Error(`OpenAI no devolvió contenido de texto (finish_reason: ${data.choices?.[0]?.finish_reason || 'desconocido'})`);
+  }
+  if (data.choices?.[0]?.finish_reason === 'length') {
+    console.error('Advertencia: la respuesta de OpenAI se cortó por límite de tokens — puede venir incompleta.');
+  }
+  return contenido;
 }
 
 // Intenta el proveedor configurado como principal (IA_PROVIDER); si falla
