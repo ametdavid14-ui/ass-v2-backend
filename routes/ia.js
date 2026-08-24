@@ -99,7 +99,11 @@ async function llamarClaude(userContent) {
     // (reafirmación, análisis, escalas, diferenciales, preguntas, alertas
     // Y las 3 secciones completas de historia clínica). Con el prompt
     // ampliado, una respuesta completa puede necesitar bastante más.
-    max_tokens: 8192,
+    // 8192 tardaba demasiado y Render cortaba la conexión antes de
+    // terminar ("Load failed") — 4096 es suficiente para las 7
+    // categorías (el problema real anterior era un salto de línea sin
+    // escapar, no falta de espacio) y genera la respuesta más rápido.
+    max_tokens: 4096,
     // El prompt de sistema es IDÉNTICO en cada llamada (nunca cambia según
     // el paciente) — cache_control lo marca para que Anthropic lo cachee.
     // Cuando 2 llamadas caen dentro de la misma ventana de caché (5 min),
@@ -135,7 +139,7 @@ async function llamarChatGPT(userContent) {
     },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_tokens: 8192, // antes 1024 — mismo motivo que Claude, insuficiente para las 7 categorías actuales
+      max_tokens: 4096, // ver nota en llamarClaude: 8192 causaba timeout en Render
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
