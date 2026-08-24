@@ -98,7 +98,7 @@ async function llamarClaude(userContent) {
     // (reafirmación, análisis, escalas, diferenciales, preguntas, alertas
     // Y las 3 secciones completas de historia clínica). Con el prompt
     // ampliado, una respuesta completa puede necesitar bastante más.
-    max_tokens: 4096,
+    max_tokens: 8192,
     // El prompt de sistema es IDÉNTICO en cada llamada (nunca cambia según
     // el paciente) — cache_control lo marca para que Anthropic lo cachee.
     // Cuando 2 llamadas caen dentro de la misma ventana de caché (5 min),
@@ -134,7 +134,7 @@ async function llamarChatGPT(userContent) {
     },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_tokens: 4096, // antes 1024 — mismo motivo que Claude, insuficiente para las 7 categorías actuales
+      max_tokens: 8192, // antes 1024 — mismo motivo que Claude, insuficiente para las 7 categorías actuales
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -202,13 +202,26 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
 
   try {
     const { texto, proveedorUsado } = await llamarIAConRespaldo(userContent);
-    // Ambos proveedores a veces envuelven el JSON en ```json ... ``` pese a la instrucción
-    const jsonLimpio = texto.replace(/```json|```/g, '').trim();
+    // Extracción robusta: se queda con todo desde la primera "{" hasta la
+    // última "}" — así ignora cualquier texto explicativo que el modelo
+    // haya agregado antes/después del JSON, además de quitar los ```json.
+    let jsonLimpio = texto.replace(/```json|```/g, '').trim();
+    const inicioJson = jsonLimpio.indexOf('{');
+    const finJson = jsonLimpio.lastIndexOf('}');
+    if (inicioJson !== -1 && finJson !== -1 && finJson > inicioJson) {
+      jsonLimpio = jsonLimpio.slice(inicioJson, finJson + 1);
+    }
     let resultado;
     try {
       resultado = JSON.parse(jsonLimpio);
     } catch (e) {
-      return res.status(502).json({ error: `La IA (${proveedorUsado}) respondió en un formato inesperado. Intenta de nuevo.` });
+      // Se registra el texto completo en el log del servidor, y se manda
+      // un fragmento real al frontend — así se puede ver qué llegó
+      // exactamente sin necesitar consola/herramientas de desarrollador.
+      console.error('No se pudo parsear la respuesta de la IA. Texto completo recibido:', texto);
+      return res.status(502).json({
+        error: `La IA (${proveedorUsado}) respondió en un formato inesperado. Fragmento recibido: "${jsonLimpio.slice(0, 300)}${jsonLimpio.length > 300 ? '...' : ''}"`
+      });
     }
     resultado._proveedor = proveedorUsado; // informativo — el frontend puede mostrarlo si quiere
 
