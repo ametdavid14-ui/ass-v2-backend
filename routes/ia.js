@@ -1,25 +1,34 @@
 // =============================================
 // ASS v2.0 — Ruta de IA: asistente clínico que analiza una nota (Historia
-// Clínica, Evolución Médica, Análisis de Salida) y ofrece 5 cosas:
-//   1. Escalas clínicas (HEART, CURB-65, Glasgow, Wells, etc.)
-//   2. Análisis ampliado
-//   3. Preguntas sugeridas para sustentar el diagnóstico
-//   4. Diagnósticos diferenciales
-//   5. CIE-10 (diferenciales + diagnóstico principal)
+// Clínica, Evolución Médica, Análisis de Salida) y ofrece:
+//   1. Reafirmación del diagnóstico planteado (con CIE-10 y qué estudio
+//      pedir si falta algo para completar una escala relacionada)
+//   2. Análisis ampliado, afirmando la sospecha diagnóstica
+//   3. Escalas clínicas (con qué estudio solicitar si falta un dato)
+//   4. Diagnósticos diferenciales (con CIE-10 y pregunta esclarecedora)
+//   5. Preguntas sugeridas para el paciente
+//   6. Alertas
+//   7. Secciones de historia clínica completa, listas para copiar
+//
+// FORMATO DE RESPUESTA — NO es JSON. Se usa un formato de texto con
+// delimitadores (@@@TIPO@@@ ... campo: valor ... texto libre). Se cambió
+// de JSON a esto porque, con textos médicos largos y libres, los modelos
+// meten con facilidad saltos de línea reales o comillas sin escapar
+// dentro de los valores — eso invalida un JSON aunque el contenido esté
+// bien. Con delimitadores de texto plano no existe ese riesgo: el texto
+// libre puede tener comillas, saltos de línea, lo que sea, sin romper el
+// parseo, porque no se usa ninguna sintaxis que necesite escaparse.
 //
 // SOPORTA 2 PROVEEDORES DE IA — Claude (Anthropic) y ChatGPT (OpenAI):
 // - IA_PROVIDER en las variables de entorno decide cuál usar primero
 //   ('claude' o 'openai'; por defecto 'claude' si no se define).
 // - Si el proveedor principal falla (sin key, sin crédito, error de red) Y
 //   el OTRO proveedor sí tiene su key configurada, se reintenta
-//   automáticamente con el otro — así basta con tener configurada
-//   cualquiera de las 2 keys para que el asistente funcione, y si tienes
-//   las 2, hay respaldo automático entre ellas.
+//   automáticamente con el otro.
 //
 // IMPORTANTE — cómo está diseñado a propósito:
 // - La IA NUNCA escribe la nota final ni la historia clínica directamente.
-//   Solo devuelve SUGERENCIAS que el médico revisa, edita y decide si usar
-//   — mismo panel que ya existe para Planes/Recomendaciones.
+//   Solo devuelve SUGERENCIAS que el médico revisa, edita y decide si usar.
 // - La IA solo ve los campos que el médico YA escribió — nunca inventa
 //   datos clínicos (signos, síntomas, antecedentes) que no estén ahí.
 // - Requiere ANTHROPIC_API_KEY y/o OPENAI_API_KEY en las variables de entorno.
@@ -38,85 +47,162 @@ Recibes la historia COMPLETA que el médico ya escribió (motivo, enfermedad act
 
 Tu trabajo tiene 7 partes, en este orden de prioridad:
 
-1. REAFIRMAR EL DIAGNÓSTICO PLANTEADO: esta es tu tarea MÁS IMPORTANTE. Toma el diagnóstico que el médico ya escribió y construye el argumento clínico de por qué el cuadro descrito (síntomas, signos, antecedentes, examen físico) lo sustenta — qué hallazgos específicos apoyan ese diagnóstico. Da también su código CIE-10 (tu mejor estimación, marcada "(verificar)" si no estás 100% seguro — nunca omitas el código por duda). Si existe una escala clínica relevante para este diagnóstico que requiere un estudio que aún no está en la nota, indícalo también aquí (qué estudio solicitar para poder calcular esa escala).
+1. REAFIRMAR EL DIAGNÓSTICO PLANTEADO: tu tarea MÁS IMPORTANTE. Toma el diagnóstico que el médico ya escribió y construye el argumento clínico de por qué el cuadro descrito lo sustenta. Da su CIE-10 (tu mejor estimación, marcada "(verificar)" si no hay certeza — nunca lo omitas por duda). Si hay una escala relevante que requiere un estudio que aún no está en la nota, indícalo aquí también.
 
-2. ANÁLISIS AMPLIADO: expande el análisis afirmando la sospecha diagnóstica del médico — no en tono dubitativo, sino construyendo el razonamiento clínico completo que conecta cada hallazgo con el diagnóstico planteado. Siempre que haya un motivo de consulta y enfermedad actual descritos, esto es trabajo esperado, no opcional.
+2. ANÁLISIS AMPLIADO: expande el análisis afirmando la sospecha diagnóstica del médico, construyendo el razonamiento clínico completo que conecta cada hallazgo con el diagnóstico planteado.
 
-3. ESCALAS CLÍNICAS: identifica si el diagnóstico o cuadro amerita calcular alguna escala reconocida (HEART Score, CURB-65, Glasgow, Wells, NEWS2, Centor, CHA2DS2-VASc, qSOFA, entre otras) y CALCÚLALA si tienes los datos mínimos. Si te falta un dato puntual para completarla, NO la omitas — indica exactamente qué estudio o dato solicitar para poder calcularla (ej: "Falta troponina para completar el HEART Score — considere solicitar troponina seriada"). Este dato faltante siempre debe venir acompañado de qué pedir para conseguirlo.
+3. ESCALAS CLÍNICAS: identifica si el diagnóstico o cuadro amerita calcular alguna escala reconocida (HEART Score, CURB-65, Glasgow, Wells, NEWS2, Centor, CHA2DS2-VASc, qSOFA, entre otras) y CALCÚLALA si tienes los datos mínimos. Si falta un dato puntual, indica exactamente qué estudio solicitar para poder calcularla — nunca omitas la escala completa por eso.
 
-4. DIAGNÓSTICOS DIFERENCIALES: como contexto adicional (no como cuestionamiento del diagnóstico principal), plantea 2 a 4 diagnósticos diferenciales razonables que un médico consideraría descartar dado este cuadro, con su CIE-10 y una frase de por qué se consideran. Para CADA diferencial, indica también qué preguntar o qué examinar específicamente para esclarecer/descartar ese diferencial frente al diagnóstico principal (ej: si el diferencial es TEP frente a un diagnóstico de dolor musculoesquelético, la pregunta esclarecedora sería sobre factores de riesgo trombótico o disnea súbita). Generar diferenciales a partir de síntomas y signos es razonamiento clínico normal, no es "inventar información".
+4. DIAGNÓSTICOS DIFERENCIALES: como contexto adicional (no como cuestionamiento del principal), plantea 2 a 4 diferenciales razonables con su CIE-10 y una frase de por qué se consideran. Para cada uno, indica también qué preguntar o examinar para esclarecerlo/descartarlo frente al diagnóstico principal.
 
-5. PREGUNTAS SUGERIDAS: identifica síntomas, signos o antecedentes relevantes que NO fueron mencionados en la nota, y sugiere que el médico los pregunte y documente. Es una SUGERENCIA DE QUÉ PREGUNTAR — nunca una afirmación de que el paciente "niega" o "presenta" algo no evaluado. Jamás redactes negativos (ej: "niega fiebre") como si ya estuvieran confirmados.
+5. PREGUNTAS SUGERIDAS: identifica síntomas, signos o antecedentes relevantes que NO fueron mencionados, y sugiere que el médico los pregunte y documente. Nunca redactes negativos (ej: "niega fiebre") como si ya estuvieran confirmados — solo sugiere la pregunta.
 
-6. ALERTAS: cualquier inconsistencia o dato fuera de rango que valga la pena que el médico revise.
+6. ALERTAS: cualquier inconsistencia o dato fuera de rango que valga la pena revisar.
 
-7. SECCIONES DE HISTORIA CLÍNICA LISTAS PARA COPIAR: al final, redacta las secciones de la nota ya completas y listas para pegar directamente en la historia clínica, incorporando todo tu razonamiento de los puntos 1-4: una sección "ANÁLISIS" (el análisis ampliado del punto 2, en formato final), una sección "DIAGNÓSTICOS" (el diagnóstico principal reafirmado + los diferenciales relevantes, con sus CIE-10, en formato final de nota), y una sección "PLAN" (los estudios sugeridos para completar escalas del punto 3, si aplica, más cualquier estudio que ayude a esclarecer los diferenciales del punto 4 — en formato de orden médica, ej: "SOLICITAR TROPONINA SERIADA"). Cada sección debe quedar como texto corrido, en mayúsculas, tal como se vería ya pegada en la nota — no repitas aquí las explicaciones/razonamientos de las secciones anteriores, solo el texto final limpio.
+7. SECCIONES DE HISTORIA CLÍNICA LISTAS PARA COPIAR: redacta 3 secciones ya completas y listas para pegar en la nota — "ANÁLISIS" (el análisis del punto 2 en formato final), "DIAGNÓSTICOS" (el diagnóstico reafirmado + diferenciales relevantes con CIE-10), y "PLAN" (estudios sugeridos para completar escalas y esclarecer diferenciales, en formato de orden médica). Texto corrido, en mayúsculas, sin repetir explicaciones de las secciones anteriores.
 
 REGLAS ESTRICTAS:
-1. NUNCA inventes hallazgos que no están en la nota (un síntoma, signo vital, o antecedente que el médico no mencionó). SÍ debes razonar, inferir, reforzar el diagnóstico y proponer escalas a partir de lo que SÍ te dieron — eso no es inventar, es tu función principal. No confundas "prudencia con los datos" con "no decir nada" o "no tomar postura".
+1. NUNCA inventes hallazgos que no están en la nota. SÍ debes razonar, inferir, reforzar el diagnóstico y proponer escalas a partir de lo que SÍ te dieron — eso no es inventar, es tu función principal.
 2. Nunca prescribas medicamentos con dosis específicas a menos que el médico ya haya mencionado esa clase de manejo.
-3. Usa lenguaje clínico normal, directo y afirmativo sobre el razonamiento ("el cuadro es compatible con...", "los hallazgos sustentan...") — la prudencia es sobre NO inventar datos, no sobre evitar dar una opinión clínica fundamentada o tomar postura a favor del diagnóstico planteado.
-4. Responde en español, en mayúsculas (para que combine con el estilo de las notas de esta app), conciso pero completo.
-5. Con un motivo de consulta y enfermedad actual razonablemente descritos, se espera que generes contenido en la mayoría de las 7 partes — deja una parte vacía SOLO si la nota realmente no tiene ningún contenido clínico relacionado con esa parte específica.
-6. Los códigos CIE-10 son siempre una sugerencia a verificar por el médico antes de facturar o registrar — pero da tu mejor estimación siempre, marcada para verificar si hay duda, en vez de omitirla.
-7. "insuficiente" es un campo GLOBAL: márcalo "true" ÚNICAMENTE si la nota no tiene absolutamente ningún contenido clínico aprovechable. Si hay un motivo de consulta y/o enfermedad actual con contenido real, "insuficiente" debe ser "false".
-8. Responde ÚNICAMENTE con el JSON — nada de texto antes, después, ni bloques de código markdown alrededor.
-9. Dentro de cualquier valor de texto (por ejemplo "argumento", "analisis_ampliado", o el "texto" de las secciones), si necesitas separar ideas en líneas distintas usa el escape "\\n" (backslash + n, dos caracteres) — NUNCA un salto de línea real dentro de las comillas, porque eso invalida el JSON completo.
+3. Usa lenguaje clínico directo y afirmativo sobre el razonamiento — la prudencia es sobre NO inventar datos, no sobre evitar dar una opinión fundamentada.
+4. Responde en español, en mayúsculas, conciso pero completo.
+5. Con un motivo de consulta y enfermedad actual razonablemente descritos, genera contenido en la mayoría de las 7 partes.
+6. Los CIE-10 son siempre una sugerencia a verificar por el médico — da tu mejor estimación siempre, marcada para verificar si hay duda.
+7. Márcalo como insuficiente ÚNICAMENTE si la nota no tiene absolutamente ningún contenido clínico aprovechable.
 
-FORMATO DE RESPUESTA — SOLO JSON, sin texto antes ni después:
-{
-  "reafirmacion_diagnostico": {
-    "diagnostico": "el diagnóstico que el médico ya escribió",
-    "argumento": "por qué el cuadro descrito sustenta este diagnóstico, citando los hallazgos específicos que lo apoyan",
-    "cie10": "código o 'código (verificar)' si no hay certeza",
-    "estudio_para_score": "si hay una escala relacionada a este diagnóstico que necesita un estudio para completarse, indícalo aquí (vacío si no aplica)"
-  },
-  "analisis_ampliado": "texto del análisis expandido, afirmando la sospecha diagnóstica, en mayúsculas",
-  "escalas": [
-    { "nombre": "NOMBRE DE LA ESCALA", "puntaje": "X/Y o 'Incompleta'", "interpretacion": "qué significa ese puntaje", "criterios_usados": "qué datos de la nota se usaron", "estudio_faltante": "si no se pudo completar, qué estudio/dato solicitar para poder calcularla (vacío si ya quedó completa)" }
-  ],
-  "diagnosticos_diferenciales": [
-    { "diagnostico": "nombre del diagnóstico diferencial", "cie10": "código o 'código (verificar)'", "razonamiento": "por qué se considera, en una frase corta", "pregunta_esclarecedora": "qué preguntar o examinar específicamente para esclarecer/descartar este diferencial" }
-  ],
-  "preguntas_sugeridas": [
-    { "pregunta": "qué preguntarle/confirmarle al paciente", "motivo": "por qué ayudaría a sustentar el diagnóstico, en una frase corta" }
-  ],
-  "alertas": ["cualquier inconsistencia o dato que valga la pena que el médico revise"],
-  "secciones_historia_completa": [
-    { "seccion": "ANÁLISIS", "texto": "texto final listo para copiar, en mayúsculas" },
-    { "seccion": "DIAGNÓSTICOS", "texto": "texto final listo para copiar, en mayúsculas" },
-    { "seccion": "PLAN", "texto": "texto final listo para copiar, en mayúsculas" }
-  ],
-  "insuficiente": false
-}`;
+FORMATO DE RESPUESTA — MUY IMPORTANTE, LEE CON CUIDADO:
+NO respondas en JSON. Responde usando EXACTAMENTE este formato de texto con delimitadores, uno por bloque. Cada bloque empieza con su marcador en su propia línea (tres arrobas, el nombre en mayúsculas, tres arrobas). Los campos cortos van como "ETIQUETA: valor" en su propia línea. El texto libre (argumentos, análisis, textos de sección) puede tener comillas, saltos de línea, apóstrofes, lo que sea — sin ningún problema, ya que no hay que escapar nada en este formato. Sigue este ejemplo exacto de estructura (con datos de ejemplo):
+
+@@@REAFIRMACION@@@
+DIAGNOSTICO: SÍNDROME CORONARIO AGUDO EN ESTUDIO
+CIE10: I24.9 (VERIFICAR)
+ESTUDIO_PARA_SCORE: SE REQUIERE TROPONINA SERIADA PARA COMPLETAR EL HEART SCORE
+ARGUMENTO:
+EL CUADRO ES COMPATIBLE CON SCA POR DOLOR TORÁCICO DE INICIO AGUDO ASOCIADO A DIAFORESIS Y DEBILIDAD, EN UN PACIENTE CON FACTORES DE RIESGO CARDIOVASCULAR.
+@@@ANALISIS@@@
+TEXTO DEL ANÁLISIS AMPLIADO AQUÍ, PUEDE TENER VARIAS LÍNEAS
+Y VARIOS PÁRRAFOS SIN NINGÚN PROBLEMA.
+@@@ESCALA@@@
+NOMBRE: HEART Score
+PUNTAJE: 5/10
+INTERPRETACION: Riesgo moderado
+CRITERIOS: Historia sospechosa, ECG normal, edad 45-64, 1 factor de riesgo
+ESTUDIO_FALTANTE: Falta troponina para completar el puntaje
+@@@DIFERENCIAL@@@
+DIAGNOSTICO: Tromboembolismo pulmonar
+CIE10: I26.9 (verificar)
+RAZONAMIENTO: Disnea y dolor torácico también son compatibles con TEP
+PREGUNTA: Preguntar por factores de riesgo trombótico, inmovilización reciente
+@@@DIFERENCIAL@@@
+DIAGNOSTICO: Pericarditis aguda
+CIE10: I30.9 (verificar)
+RAZONAMIENTO: Dolor torácico puede presentarse en pericarditis
+PREGUNTA: Preguntar si el dolor cambia con la posición o la respiración
+@@@PREGUNTA_SUGERIDA@@@
+PREGUNTA: ¿El dolor irradia a brazo izquierdo o mandíbula?
+MOTIVO: Ayuda a sustentar el origen coronario del dolor
+@@@ALERTA@@@
+La frecuencia cardíaca registrada está elevada y no se menciona en el análisis
+@@@SECCION_HISTORIA@@@
+NOMBRE: ANÁLISIS
+PACIENTE CON CUADRO DE DOLOR TORÁCICO...(texto final completo aquí)
+@@@SECCION_HISTORIA@@@
+NOMBRE: DIAGNÓSTICOS
+SÍNDROME CORONARIO AGUDO EN ESTUDIO (I24.9)...(texto final completo aquí)
+@@@SECCION_HISTORIA@@@
+NOMBRE: PLAN
+SOLICITAR TROPONINA SERIADA, ELECTROCARDIOGRAMA DE 12 DERIVACIONES...(texto final completo aquí)
+@@@INSUFICIENTE@@@
+false
+@@@FIN@@@
+
+Repite el bloque @@@ESCALA@@@ tantas veces como escalas apliquen (0 o más), @@@DIFERENCIAL@@@ entre 2 y 4 veces, @@@PREGUNTA_SUGERIDA@@@ tantas veces como preguntas tengas, @@@ALERTA@@@ tantas veces como alertas haya (puede ser 0). Si no hay contenido para un bloque repetible, simplemente omítelo por completo. Los bloques @@@REAFIRMACION@@@, @@@ANALISIS@@@ e @@@INSUFICIENTE@@@ aparecen exactamente una vez cada uno. @@@SECCION_HISTORIA@@@ aparece exactamente 3 veces (ANÁLISIS, DIAGNÓSTICOS, PLAN). Termina siempre con @@@FIN@@@. No agregues texto explicativo antes del primer @@@ ni después de @@@FIN@@@.`;
+
+// ---------- Parseo del formato de delimitadores (reemplaza JSON.parse) ----------
+// Extrae campos "ETIQUETA: valor" de las primeras líneas de un bloque; el
+// resto del contenido (después del último campo reconocido) queda en
+// "_resto" — se usa para el texto libre largo, que puede tener comillas y
+// saltos de línea sin ningún problema.
+function extraerCamposDeBloque(contenido, etiquetas) {
+  const lineas = contenido.split('\n');
+  const campos = {};
+  let i = 0;
+  while (i < lineas.length) {
+    const m = lineas[i].match(/^([A-Z0-9_]+):\s*(.*)$/);
+    if (m && etiquetas.includes(m[1])) {
+      campos[m[1]] = m[2].trim();
+      i++;
+    } else {
+      break;
+    }
+  }
+  campos._resto = lineas.slice(i).join('\n').trim();
+  return campos;
+}
+
+function parsearRespuestaDelimitada(textoCompleto) {
+  const resultado = {
+    reafirmacion_diagnostico: null,
+    analisis_ampliado: '',
+    escalas: [],
+    diagnosticos_diferenciales: [],
+    preguntas_sugeridas: [],
+    alertas: [],
+    secciones_historia_completa: [],
+    insuficiente: false,
+  };
+
+  const partes = textoCompleto.split(/@@@([A-Z_]+)@@@/);
+  for (let i = 1; i < partes.length; i += 2) {
+    const tipo = partes[i];
+    const contenido = (partes[i + 1] || '').trim();
+    if (tipo === 'REAFIRMACION') {
+      const c = extraerCamposDeBloque(contenido, ['DIAGNOSTICO', 'CIE10', 'ESTUDIO_PARA_SCORE', 'ARGUMENTO']);
+      resultado.reafirmacion_diagnostico = {
+        diagnostico: c.DIAGNOSTICO || '',
+        cie10: c.CIE10 || '',
+        estudio_para_score: c.ESTUDIO_PARA_SCORE || '',
+        argumento: c._resto || c.ARGUMENTO || '',
+      };
+    } else if (tipo === 'ANALISIS') {
+      resultado.analisis_ampliado = contenido;
+    } else if (tipo === 'ESCALA') {
+      const c = extraerCamposDeBloque(contenido, ['NOMBRE', 'PUNTAJE', 'INTERPRETACION', 'CRITERIOS', 'ESTUDIO_FALTANTE']);
+      if (c.NOMBRE) resultado.escalas.push({
+        nombre: c.NOMBRE || '', puntaje: c.PUNTAJE || '',
+        interpretacion: c.INTERPRETACION || '', criterios_usados: c.CRITERIOS || '',
+        estudio_faltante: c.ESTUDIO_FALTANTE || '',
+      });
+    } else if (tipo === 'DIFERENCIAL') {
+      const c = extraerCamposDeBloque(contenido, ['DIAGNOSTICO', 'CIE10', 'RAZONAMIENTO', 'PREGUNTA']);
+      if (c.DIAGNOSTICO) resultado.diagnosticos_diferenciales.push({
+        diagnostico: c.DIAGNOSTICO || '', cie10: c.CIE10 || '',
+        razonamiento: c.RAZONAMIENTO || '', pregunta_esclarecedora: c.PREGUNTA || '',
+      });
+    } else if (tipo === 'PREGUNTA_SUGERIDA') {
+      const c = extraerCamposDeBloque(contenido, ['PREGUNTA', 'MOTIVO']);
+      if (c.PREGUNTA) resultado.preguntas_sugeridas.push({ pregunta: c.PREGUNTA || '', motivo: c.MOTIVO || '' });
+    } else if (tipo === 'ALERTA') {
+      if (contenido) resultado.alertas.push(contenido);
+    } else if (tipo === 'SECCION_HISTORIA') {
+      const c = extraerCamposDeBloque(contenido, ['NOMBRE']);
+      if (c.NOMBRE) resultado.secciones_historia_completa.push({ seccion: c.NOMBRE, texto: c._resto || '' });
+    } else if (tipo === 'INSUFICIENTE') {
+      resultado.insuficiente = contenido.toLowerCase().includes('true');
+    }
+  }
+  return resultado;
+}
 
 // ---------- Llamada a Claude (Anthropic) ----------
 async function llamarClaude(userContent) {
   if (!anthropic) throw new Error('ANTHROPIC_API_KEY no configurada');
   const mensaje = await anthropic.messages.create({
     model: 'claude-sonnet-5',
-    // Antes en 1024 — insuficiente para las 7 categorías actuales
-    // (reafirmación, análisis, escalas, diferenciales, preguntas, alertas
-    // Y las 3 secciones completas de historia clínica). Con el prompt
-    // ampliado, una respuesta completa puede necesitar bastante más.
-    // 8192 tardaba demasiado y Render cortaba la conexión antes de
-    // terminar ("Load failed") — 4096 es suficiente para las 7
-    // categorías (el problema real anterior era un salto de línea sin
-    // escapar, no falta de espacio) y genera la respuesta más rápido.
     max_tokens: 4096,
-    // El prompt de sistema es IDÉNTICO en cada llamada (nunca cambia según
-    // el paciente) — cache_control lo marca para que Anthropic lo cachee.
-    // Cuando 2 llamadas caen dentro de la misma ventana de caché (5 min),
-    // la segunda paga ~10% del costo normal por esa parte del texto, en
-    // vez de recalcularlo completo cada vez. En un turno con varios
-    // médicos usando el asistente seguido, esto reduce el costo real.
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: userContent }],
   });
-  // Busca el PRIMER bloque de tipo texto (más robusto que asumir que
-  // content[0] siempre es texto) y registra información de diagnóstico si
-  // no se encuentra — antes esto fallaba EN SILENCIO devolviendo '{}',
-  // que parecía una respuesta válida pero vacía, sin ningún error visible.
   const bloqueTexto = mensaje.content?.find(b => b.type === 'text');
   if (!bloqueTexto?.text) {
     console.error('Claude no devolvió texto. stop_reason:', mensaje.stop_reason, '— content:', JSON.stringify(mensaje.content));
@@ -139,8 +225,7 @@ async function llamarChatGPT(userContent) {
     },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_tokens: 4096, // ver nota en llamarClaude: 8192 causaba timeout en Render
-      response_format: { type: 'json_object' },
+      max_tokens: 4096,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userContent },
@@ -165,36 +250,6 @@ async function llamarChatGPT(userContent) {
 
 // Intenta el proveedor configurado como principal (IA_PROVIDER); si falla
 // y el otro tiene su key configurada, reintenta automáticamente con ese.
-// Los modelos a veces meten saltos de línea REALES dentro de un valor de
-// texto largo (ej: en las secciones de historia clínica completa) — eso
-// es inválido en JSON (ahí un salto de línea debe ir escapado como \n,
-// dos caracteres, no un salto de línea de verdad). Esta función recorre
-// el texto carácter por carácter y, SOLO cuando está dentro de un valor
-// entre comillas, convierte saltos de línea/tabulaciones reales en su
-// forma escapada — así el JSON queda válido sin tener que depender de
-// que el modelo nunca cometa este error.
-function sanearSaltosDeLineaEnStrings(texto) {
-  let resultado = '';
-  let dentroString = false;
-  let anteriorEsBackslash = false;
-  for (let i = 0; i < texto.length; i++) {
-    const c = texto[i];
-    if (dentroString) {
-      if (anteriorEsBackslash) { resultado += c; anteriorEsBackslash = false; continue; }
-      if (c === '\\') { resultado += c; anteriorEsBackslash = true; continue; }
-      if (c === '"') { dentroString = false; resultado += c; continue; }
-      if (c === '\n') { resultado += '\\n'; continue; }
-      if (c === '\r') { resultado += '\\r'; continue; }
-      if (c === '\t') { resultado += '\\t'; continue; }
-      resultado += c;
-    } else {
-      if (c === '"') dentroString = true;
-      resultado += c;
-    }
-  }
-  return resultado;
-}
-
 async function llamarIAConRespaldo(userContent) {
   const principal = (process.env.IA_PROVIDER || 'claude').toLowerCase();
   const proveedores = principal === 'openai' ? ['openai', 'claude'] : ['claude', 'openai'];
@@ -222,8 +277,6 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: 'La IA no está configurada en el servidor (falta ANTHROPIC_API_KEY y/o OPENAI_API_KEY)' });
   }
 
-  // Solo se envían los campos con contenido real — no tiene sentido
-  // mandarle a la IA campos vacíos o con "___"
   const camposConContenido = Object.entries(campos)
     .filter(([_, v]) => v && String(v).trim() && String(v).trim() !== '___')
     .map(([k, v]) => `${k.toUpperCase()}: ${v}`)
@@ -237,47 +290,17 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
 
   try {
     const { texto, proveedorUsado } = await llamarIAConRespaldo(userContent);
-    // Extracción robusta: se queda con todo desde la primera "{" hasta la
-    // última "}" — así ignora cualquier texto explicativo que el modelo
-    // haya agregado antes/después del JSON, además de quitar los ```json.
-    let jsonLimpio = texto.replace(/```json|```/g, '').trim();
-    const inicioJson = jsonLimpio.indexOf('{');
-    const finJson = jsonLimpio.lastIndexOf('}');
-    if (inicioJson !== -1 && finJson !== -1 && finJson > inicioJson) {
-      jsonLimpio = jsonLimpio.slice(inicioJson, finJson + 1);
-    }
-    jsonLimpio = sanearSaltosDeLineaEnStrings(jsonLimpio);
-    let resultado;
-    try {
-      resultado = JSON.parse(jsonLimpio);
-    } catch (e) {
-      // Se registra el texto completo en el log del servidor, y se manda
-      // un fragmento REAL al frontend — específicamente alrededor del
-      // punto exacto donde falló el parseo (no solo el inicio), y se
-      // detecta si la respuesta parece haberse cortado antes de terminar.
-      console.error('No se pudo parsear la respuesta de la IA. Texto completo recibido:', texto);
-      const posMatch = e.message.match(/position (\d+)/);
-      const pos = posMatch ? parseInt(posMatch[1], 10) : null;
-      let fragmento;
-      if (pos !== null) {
-        const inicio = Math.max(0, pos - 200);
-        const fin = Math.min(jsonLimpio.length, pos + 100);
-        fragmento = `${inicio > 0 ? '...' : ''}${jsonLimpio.slice(inicio, fin)}${fin < jsonLimpio.length ? '...' : ''}`;
-      } else {
-        fragmento = jsonLimpio.slice(-400); // sin posición: mostrar el FINAL, para ver si se cortó ahí
-      }
-      const pareceCortado = !jsonLimpio.trim().endsWith('}');
+
+    if (!texto.includes('@@@')) {
+      console.error('La IA no respondió en el formato de delimitadores esperado. Texto completo:', texto);
       return res.status(502).json({
-        error: `La IA (${proveedorUsado}) respondió en un formato inesperado.${pareceCortado ? ' La respuesta PARECE HABERSE CORTADO antes de terminar (no termina en "}").' : ''} Detalle: ${e.message}. Texto alrededor del problema: "${fragmento}"`
+        error: `La IA (${proveedorUsado}) no respondió en el formato esperado. Primeros caracteres: "${texto.slice(0, 300)}"`
       });
     }
-    resultado._proveedor = proveedorUsado; // informativo — el frontend puede mostrarlo si quiere
 
-    // Se guarda SIEMPRE, automáticamente — incluye lo que se envió y la
-    // respuesta completa, aunque el médico después no use ninguna
-    // sugerencia. Si falla el guardado, no se bloquea la respuesta al
-    // médico (el análisis ya lo tiene en pantalla); solo se registra el
-    // error en el log del servidor.
+    const resultado = parsearRespuestaDelimitada(texto);
+    resultado._proveedor = proveedorUsado;
+
     try {
       await db.query(
         `INSERT INTO analisis_ia (usuario_id, documento_paciente, nombre_paciente, tipo_formulario, campos_enviados, respuesta_ia, proveedor)
