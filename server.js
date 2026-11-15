@@ -18,6 +18,7 @@ const configPersonalRoutes = require('./routes/config-personal');
 const setupRoutes    = require('./routes/setup');  // ← Wizard instalación
 const cuentaRoutes   = require('./routes/cuenta');  // ← Recuperación de contraseña
 const iaRoutes       = require('./routes/ia');       // ← Asistente clínico (Claude)
+const cie10Routes    = require('./routes/cie10');    // ← Buscador CIE-10 completo
 const { db }         = require('./db');
 
 const app  = express();
@@ -85,6 +86,7 @@ app.use('/api/config',     configRoutes);
 app.use('/api/config-personal', configPersonalRoutes);
 app.use('/api/cuenta',     loginLimiter, cuentaRoutes);
 app.use('/api/ia',         iaRoutes);
+app.use('/api/cie10',      cie10Routes);
 
 // Health check — usado por keep-alive y Render
 app.get('/api/health', (req, res) => {

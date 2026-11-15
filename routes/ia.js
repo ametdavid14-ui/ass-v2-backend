@@ -35,11 +35,8 @@
 // =============================================
 
 const router = require('express').Router();
-const Anthropic = require('@anthropic-ai/sdk');
 const { authMiddleware } = require('../middleware/auth');
 const { db } = require('../db');
-
-const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 
 const SYSTEM_PROMPT = `Eres un asistente clínico de apoyo para un médico de urgencias en Colombia que está completando una nota médica (Historia Clínica, Evolución Médica o Análisis de Salida).
 
@@ -193,82 +190,12 @@ function parsearRespuestaDelimitada(textoCompleto) {
   return resultado;
 }
 
-// ---------- Llamada a Claude (Anthropic) ----------
-async function llamarClaude(userContent) {
-  if (!anthropic) throw new Error('ANTHROPIC_API_KEY no configurada');
-  const mensaje = await anthropic.messages.create({
-    model: 'claude-sonnet-5',
-    max_tokens: 4096,
-    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content: userContent }],
-  });
-  const bloqueTexto = mensaje.content?.find(b => b.type === 'text');
-  if (!bloqueTexto?.text) {
-    console.error('Claude no devolvió texto. stop_reason:', mensaje.stop_reason, '— content:', JSON.stringify(mensaje.content));
-    throw new Error(`Claude no devolvió contenido de texto (stop_reason: ${mensaje.stop_reason || 'desconocido'})`);
-  }
-  if (mensaje.stop_reason === 'max_tokens') {
-    console.error('Advertencia: la respuesta de Claude se cortó por max_tokens — puede venir incompleta.');
-  }
-  return bloqueTexto.text;
-}
-
-// ---------- Llamada a ChatGPT (OpenAI) — sin SDK aparte, con fetch nativo ----------
-async function llamarChatGPT(userContent) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY no configurada');
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || 'gpt-4o',
-      max_tokens: 4096,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userContent },
-      ],
-    }),
-  });
-  if (!resp.ok) {
-    const cuerpoError = await resp.text().catch(() => '');
-    throw new Error(`OpenAI respondió ${resp.status}: ${cuerpoError.slice(0, 200)}`);
-  }
-  const data = await resp.json();
-  const contenido = data.choices?.[0]?.message?.content;
-  if (!contenido) {
-    console.error('OpenAI no devolvió contenido. finish_reason:', data.choices?.[0]?.finish_reason, '— respuesta:', JSON.stringify(data).slice(0, 500));
-    throw new Error(`OpenAI no devolvió contenido de texto (finish_reason: ${data.choices?.[0]?.finish_reason || 'desconocido'})`);
-  }
-  if (data.choices?.[0]?.finish_reason === 'length') {
-    console.error('Advertencia: la respuesta de OpenAI se cortó por límite de tokens — puede venir incompleta.');
-  }
-  return contenido;
-}
-
-// Intenta el proveedor configurado como principal (IA_PROVIDER); si falla
-// y el otro tiene su key configurada, reintenta automáticamente con ese.
-async function llamarIAConRespaldo(userContent) {
-  const principal = (process.env.IA_PROVIDER || 'claude').toLowerCase();
-  const proveedores = principal === 'openai' ? ['openai', 'claude'] : ['claude', 'openai'];
-
-  let ultimoError = null;
-  for (const proveedor of proveedores) {
-    try {
-      const texto = proveedor === 'openai' ? await llamarChatGPT(userContent) : await llamarClaude(userContent);
-      return { texto, proveedorUsado: proveedor };
-    } catch (e) {
-      console.error(`Error con ${proveedor}:`, e.message);
-      ultimoError = e;
-    }
-  }
-  throw ultimoError || new Error('Ningún proveedor de IA está configurado');
-}
+// ---------- Llamadas a IA — compartidas con otras rutas (ver utils/iaProveedor.js) ----------
+const { llamarIAConRespaldo } = require('../utils/iaProveedor');
 
 // POST /api/ia/analizar-nota
 router.post('/analizar-nota', authMiddleware, async (req, res) => {
-  const { tipo, campos, documento, nombrePaciente } = req.body;
+  const { tipo, campos } = req.body;
   if (!campos || typeof campos !== 'object') {
     return res.status(400).json({ error: 'Faltan los campos de la nota' });
   }
@@ -288,7 +215,7 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
   const userContent = `Tipo de nota: ${tipo || 'Historia Clínica'}\n\nLo que el médico ya escribió:\n\n${camposConContenido}`;
 
   try {
-    const { texto, proveedorUsado } = await llamarIAConRespaldo(userContent);
+    const { texto, proveedorUsado } = await llamarIAConRespaldo(SYSTEM_PROMPT, userContent, 4096);
 
     if (!texto.includes('@@@')) {
       console.error('La IA no respondió en el formato de delimitadores esperado. Texto completo:', texto);
@@ -300,37 +227,10 @@ router.post('/analizar-nota', authMiddleware, async (req, res) => {
     const resultado = parsearRespuestaDelimitada(texto);
     resultado._proveedor = proveedorUsado;
 
-    try {
-      await db.query(
-        `INSERT INTO analisis_ia (usuario_id, documento_paciente, nombre_paciente, tipo_formulario, campos_enviados, respuesta_ia, proveedor)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [req.user.id, documento || null, nombrePaciente || null, tipo || 'Historia Clínica', JSON.stringify(campos), JSON.stringify(resultado), proveedorUsado]
-      );
-    } catch (errorGuardado) {
-      console.error('No se pudo guardar el análisis de IA en el historial:', errorGuardado.message);
-    }
-
     res.json(resultado);
   } catch (e) {
     console.error('Error llamando a la IA (ambos proveedores fallaron o ninguno está configurado):', e.message);
     res.status(502).json({ error: 'No se pudo conectar con ningún proveedor de IA — verifica las API keys y el crédito disponible' });
-  }
-});
-
-// GET /api/ia/historial/:documento — historial de análisis de un paciente
-router.get('/historial/:documento', authMiddleware, async (req, res) => {
-  try {
-    const r = await db.query(
-      `SELECT a.id, a.documento_paciente, a.tipo_formulario, a.campos_enviados, a.respuesta_ia, a.proveedor, a.created_at, u.nombre AS medico
-       FROM analisis_ia a
-       LEFT JOIN usuarios u ON u.id = a.usuario_id
-       WHERE a.documento_paciente = $1
-       ORDER BY a.created_at DESC`,
-      [req.params.documento]
-    );
-    res.json(r.rows);
-  } catch (e) {
-    res.status(500).json({ error: 'Error obteniendo el historial de análisis' });
   }
 });
 

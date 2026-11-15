@@ -209,4 +209,20 @@ router.get('/log', async (req, res) => {
   }
 });
 
+// POST /api/admin/purgar-pacientes — borra PERMANENTEMENTE todas las notas
+// archivadas y el historial de análisis IA de todos los usuarios.
+router.post('/purgar-pacientes', async (req, res) => {
+  if ((req.body?.confirmacion || '') !== 'BORRAR') {
+    return res.status(400).json({ error: 'Falta la confirmación' });
+  }
+  try {
+    const n = await db.query('DELETE FROM notas_turno');
+    let a = { rowCount: 0 };
+    try { a = await db.query('DELETE FROM analisis_ia'); } catch (e) { /* la tabla puede no existir */ }
+    res.json({ notas_borradas: n.rowCount, analisis_borrados: a.rowCount });
+  } catch (e) {
+    res.status(500).json({ error: 'Error borrando los datos' });
+  }
+});
+
 module.exports = router;

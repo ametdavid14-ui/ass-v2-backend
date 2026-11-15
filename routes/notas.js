@@ -1,30 +1,15 @@
 // =============================================
 // ASS v2.0 — Notas del Turno
-// - Por defecto expiran en 24h (comportamiento de siempre).
-// - Si el usuario es admin, o si el admin activó la retención indefinida
-//   para los usuarios (config_modulos: 'notas_retencion_indefinida_usuarios'),
-//   la nota queda guardada indefinidamente hasta que se borre a mano.
-// - Guarda nombre del paciente Y documento/tipo de documento, para poder
-//   identificar la nota en el Calendario Médico y buscar por DNI en
-//   Búsqueda de Paciente.
+// - Expiran SIEMPRE a las 24 horas. No se guarda información de pacientes.
 // =============================================
 const router = require('express').Router();
 const { db } = require('../db');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 
-async function retencionIndefinidaHabilitada() {
-  try {
-    const r = await db.query(`SELECT valor FROM config_modulos WHERE clave = 'notas_retencion_indefinida_usuarios'`);
-    const v = r.rows[0]?.valor;
-    return v === true || v === 'true';
-  } catch (e) {
-    return false;
-  }
-}
-
 // GET /api/notas — Notas del turno ACTIVO (las que aún no expiraron)
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    await db.query('DELETE FROM notas_turno WHERE expira_at < NOW()').catch(() => {});
     const result = await db.query(
       `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida
        FROM notas_turno
@@ -84,54 +69,6 @@ router.get('/dia', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/notas/paciente?q=XXXX
-// Todas las notas (de retención indefinida) que coincidan con el texto
-// buscado, ya sea por número de DOCUMENTO (coincidencia exacta) o por
-// NOMBRE del paciente (coincidencia parcial, sin distinguir mayúsculas) —
-// para "Búsqueda de Paciente". Solo dentro de las notas del propio
-// usuario (misma privacidad que el resto de la app). Se ordenan de la
-// MÁS RECIENTE a la más antigua (DESC), para ver primero lo último que
-// pasó con el paciente.
-router.get('/paciente', authMiddleware, async (req, res) => {
-  const q = (req.query.q || req.query.documento || '').trim();
-  if (!q) return res.status(400).json({ error: 'Escriba un nombre o número de documento' });
-  try {
-    const result = await db.query(
-      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at
-       FROM notas_turno
-       WHERE usuario_id = $1 AND retencion_indefinida = true
-         AND (documento = $2 OR paciente ILIKE $3)
-       ORDER BY created_at DESC`,
-      [req.user.id, q, `%${q}%`]
-    );
-    res.json(result.rows);
-  } catch (e) {
-    res.status(500).json({ error: 'Error buscando notas del paciente' });
-  }
-});
-
-// GET /api/notas/paciente/ingresos?documento=XXX
-// Todas las notas de UN paciente específico (por documento exacto), CON su
-// episodio_id — para la página completa "Ficha del Paciente", donde se
-// agrupan y muestran por INGRESO (episodio de atención), el más reciente
-// primero, y dentro de cada ingreso también la nota más reciente primero.
-router.get('/paciente/ingresos', authMiddleware, async (req, res) => {
-  const documento = (req.query.documento || '').trim();
-  if (!documento) return res.status(400).json({ error: 'documento requerido' });
-  try {
-    const result = await db.query(
-      `SELECT id, tipo, contenido, paciente, documento, tipo_documento, created_at, episodio_id
-       FROM notas_turno
-       WHERE usuario_id = $1 AND retencion_indefinida = true AND documento = $2
-       ORDER BY created_at DESC`,
-      [req.user.id, documento]
-    );
-    res.json(result.rows);
-  } catch (e) {
-    res.status(500).json({ error: 'Error obteniendo los ingresos del paciente' });
-  }
-});
-
 // POST /api/notas — Guardar nota del turno
 // Determina a qué INGRESO (episodio_id) pertenece una nota nueva:
 // - Si viene un episodio_id_forzado (el médico entró directo a un ingreso
@@ -141,41 +78,17 @@ router.get('/paciente/ingresos', authMiddleware, async (req, res) => {
 //   tipo). Si fue hace menos de 24 horas, se reutiliza su episodio_id
 //   (sigue siendo la misma atención). Si no hay ninguna, o la última fue
 //   hace 24 horas o más, se genera un episodio_id nuevo (nuevo ingreso).
-async function resolverEpisodioId(userId, documento, episodioForzado) {
-  if (episodioForzado) return episodioForzado;
-  if (!documento) return null; // sin documento no se puede agrupar por paciente
-
-  const r = await db.query(
-    `SELECT episodio_id, created_at
-     FROM notas_turno
-     WHERE usuario_id = $1 AND documento = $2 AND episodio_id IS NOT NULL
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [userId, documento]
-  );
-  const ultima = r.rows[0];
-  if (ultima && (Date.now() - new Date(ultima.created_at).getTime()) < 24 * 60 * 60 * 1000) {
-    return ultima.episodio_id;
-  }
-  const nuevo = await db.query(`SELECT gen_random_uuid() AS id`);
-  return nuevo.rows[0].id;
-}
-
 router.post('/', authMiddleware, async (req, res) => {
-  const { tipo, contenido, paciente, documento, tipo_documento, episodio_id_forzado } = req.body;
-  if (!tipo) {
-    return res.status(400).json({ error: 'tipo requerido' });
-  }
+  const { tipo, contenido } = req.body;
+  if (!tipo) return res.status(400).json({ error: 'tipo requerido' });
   try {
-    const esAdmin = req.user.rol === 'admin';
-    const indefinida = esAdmin || await retencionIndefinidaHabilitada();
-    const expiraSql = indefinida ? `NOW() + INTERVAL '100 years'` : `NOW() + INTERVAL '24 hours'`;
-    const episodioId = await resolverEpisodioId(req.user.id, documento || '', episodio_id_forzado || null);
+    // Nunca se guardan datos de pacientes (nombre/documento) y la nota
+    // siempre expira a las 24 horas.
     const result = await db.query(
       `INSERT INTO notas_turno (usuario_id, tipo, contenido, paciente, documento, tipo_documento, expira_at, retencion_indefinida, episodio_id)
-       VALUES ($1, $2, $3, $4, $5, $6, ${expiraSql}, $7, $8)
+       VALUES ($1, $2, $3, '', '', '', NOW() + INTERVAL '24 hours', false, NULL)
        RETURNING id, tipo, contenido, paciente, documento, tipo_documento, created_at, expira_at, retencion_indefinida, episodio_id`,
-      [req.user.id, tipo, contenido || '', paciente || '', documento || '', tipo_documento || '', indefinida, episodioId]
+      [req.user.id, tipo, contenido || '']
     );
     res.status(201).json(result.rows[0]);
   } catch (e) {
