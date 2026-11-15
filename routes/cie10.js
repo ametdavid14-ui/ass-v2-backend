@@ -7,6 +7,19 @@ const { db } = require('../db');
 const { authMiddleware } = require('../middleware/auth');
 const { llamarIAConRespaldo } = require('../utils/iaProveedor');
 
+// Búsqueda indiferente a tildes y mayúsculas: se normaliza el texto de la
+// BD (sin necesitar extensiones) y el texto buscado, y se exige que TODAS
+// las palabras escritas aparezcan en la descripción.
+const NORM_SQL = "translate(lower(descripcion), 'áéíóúüñàèìòù', 'aeiouunaeiou')";
+function normalizarBusqueda(s) {
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+function condicionPalabras(texto, desdeParam) {
+  const palabras = normalizarBusqueda(texto).split(/[^a-z0-9]+/).filter(p => p.length >= 2).slice(0, 8).map(p => p.length > 3 ? p.replace(/(es|s)$/, '') : p);
+  if (!palabras.length) return { sql: 'TRUE', params: [] };
+  return { sql: palabras.map((_, i) => `${NORM_SQL} LIKE $${desdeParam + i}`).join(' AND '), params: palabras.map(p => `%${p}%`) };
+}
+
 // GET /api/cie10/buscar?q=texto — busca por código o por descripción.
 // Si el texto parece un código (empieza con letra+número, ej "I21" o
 // "i21.9"), prioriza coincidencia por código; si no, busca por texto
@@ -25,12 +38,12 @@ router.get('/buscar', authMiddleware, async (req, res) => {
         [`${q.toUpperCase()}%`]
       );
     } else {
+      const cond = condicionPalabras(q, 1);
       resultado = await db.query(
         `SELECT codigo, descripcion FROM cie10_codigos
-         WHERE to_tsvector('spanish', descripcion) @@ plainto_tsquery('spanish', $1)
-            OR descripcion ILIKE $2
-         ORDER BY codigo LIMIT 50`,
-        [q, `%${q}%`]
+         WHERE ${cond.sql}
+         ORDER BY length(descripcion) ASC, codigo LIMIT 50`,
+        cond.params
       );
     }
     res.json(resultado.rows);
@@ -86,13 +99,13 @@ router.get('/buscar-sindromatico', authMiddleware, async (req, res) => {
     // se valida contra la tabla oficial.
     const resultados = [];
     for (const dx of diagnosticos) {
+      const cond = condicionPalabras(dx, 1);
       const r = await db.query(
         `SELECT codigo, descripcion FROM cie10_codigos
-         WHERE to_tsvector('spanish', descripcion) @@ plainto_tsquery('spanish', $1)
-            OR descripcion ILIKE $2
+         WHERE ${cond.sql}
          ORDER BY length(descripcion) ASC
          LIMIT 1`,
-        [dx, `%${dx}%`]
+        cond.params
       );
       resultados.push({
         diagnostico: dx,

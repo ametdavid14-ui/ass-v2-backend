@@ -26,12 +26,11 @@ router.get('/buscar', authMiddleware, async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) return res.json([]);
   try {
-    const result = await db.query(
-      `SELECT * FROM codigos WHERE activo = true AND (
-        nombre ILIKE $1 OR codigo ILIKE $1 OR categoria ILIKE $1
-      ) ORDER BY tipo, nombre LIMIT 50`,
-      [`%${q}%`]
-    );
+    const norm = x => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const palabras = norm(q).split(/\s+/).filter(Boolean).slice(0, 8).map(p => p.length > 3 ? p.replace(/(es|s)$/, '') : p);
+    const params = palabras.map(p => `%${p}%`);
+    const cond = palabras.map((_, i) => `(translate(lower(nombre), 'áéíóúüñ', 'aeiouun') LIKE $${i + 1} OR codigo ILIKE $${i + 1} OR translate(lower(categoria), 'áéíóúüñ', 'aeiouun') LIKE $${i + 1})`).join(' AND ') || 'TRUE';
+    const result = await db.query(`SELECT * FROM codigos WHERE activo = true AND ${cond} ORDER BY tipo, nombre LIMIT 50`, params);
     res.json(result.rows);
   } catch (e) {
     res.status(500).json({ error: 'Error en búsqueda' });
