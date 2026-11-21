@@ -32,15 +32,15 @@ router.get('/buscar', authMiddleware, async (req, res) => {
     let resultado;
     if (pareceCodigo) {
       resultado = await db.query(
-        `SELECT codigo, descripcion FROM cie10_codigos
-         WHERE codigo ILIKE $1
+        `SELECT replace(codigo, '.', '') AS codigo, descripcion FROM cie10_codigos
+         WHERE replace(codigo, '.', '') ILIKE $1
          ORDER BY codigo LIMIT 50`,
-        [`${q.toUpperCase()}%`]
+        [`${q.replace(/\./g, '').toUpperCase()}%`]
       );
     } else {
       const cond = condicionPalabras(q, 1);
       resultado = await db.query(
-        `SELECT codigo, descripcion FROM cie10_codigos
+        `SELECT replace(codigo, '.', '') AS codigo, descripcion FROM cie10_codigos
          WHERE ${cond.sql}
          ORDER BY length(descripcion) ASC, codigo LIMIT 50`,
         cond.params
@@ -101,7 +101,7 @@ router.get('/buscar-sindromatico', authMiddleware, async (req, res) => {
     for (const dx of diagnosticos) {
       const cond = condicionPalabras(dx, 1);
       const r = await db.query(
-        `SELECT codigo, descripcion FROM cie10_codigos
+        `SELECT replace(codigo, '.', '') AS codigo, descripcion FROM cie10_codigos
          WHERE ${cond.sql}
          ORDER BY length(descripcion) ASC
          LIMIT 1`,

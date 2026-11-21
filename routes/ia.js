@@ -156,7 +156,7 @@ function parsearRespuestaDelimitada(textoCompleto) {
       const c = extraerCamposDeBloque(contenido, ['DIAGNOSTICO', 'CIE10', 'ESTUDIO_PARA_SCORE', 'ARGUMENTO']);
       resultado.reafirmacion_diagnostico = {
         diagnostico: c.DIAGNOSTICO || '',
-        cie10: c.CIE10 || '',
+        cie10: (c.CIE10 || '').replace(/\./g, ''),
         estudio_para_score: c.ESTUDIO_PARA_SCORE || '',
         argumento: c._resto || c.ARGUMENTO || '',
       };
@@ -172,7 +172,7 @@ function parsearRespuestaDelimitada(textoCompleto) {
     } else if (tipo === 'DIFERENCIAL') {
       const c = extraerCamposDeBloque(contenido, ['DIAGNOSTICO', 'CIE10', 'RAZONAMIENTO', 'PREGUNTA']);
       if (c.DIAGNOSTICO) resultado.diagnosticos_diferenciales.push({
-        diagnostico: c.DIAGNOSTICO || '', cie10: c.CIE10 || '',
+        diagnostico: c.DIAGNOSTICO || '', cie10: (c.CIE10 || '').replace(/\./g, ''),
         razonamiento: c.RAZONAMIENTO || '', pregunta_esclarecedora: c.PREGUNTA || '',
       });
     } else if (tipo === 'PREGUNTA_SUGERIDA') {
